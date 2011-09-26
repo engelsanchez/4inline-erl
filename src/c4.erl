@@ -1,5 +1,3 @@
-%% Author: Engel
-%% Created: Sep 14, 2011
 %% Description: TODO: Add description to c4
 -module(c4).
 
@@ -16,12 +14,58 @@
 %% API Functions
 %%
 
+%%
+%% Entities:
+%% 1 server process (or multiple)
+%% 1 game coordinator (child of server)
+%% * game processes (child of game coordinator, monitored by players, monitors players)
+%% * player handler processes (children of the server)
+%%  
+%% Player Handler States:
+%%
+%% Idle
+%%   - JOIN -> WaitingForGame
+%%   - QUIT -> Goodbye
+%%   - Disconnect -> Abort
+%%   - Connection error -> Abort
+%%
+%% WaitingForGame
+%%   Contact game coordinator, request join
+%%   - Player QUIT -> AbortGame, Goodbye
+%%   - Game Master  {Join, GamePid}  -> InGame
+%%
+%% InGame
+%%   Wait for game result
+%%   - Disconnect -> AbortGame, Abort
+%%   - Connection error -> AbortGame, Abort
+%%   - Player QUIT -> AbandoningGame
+%%   - Game error -> GameError, Idle
+%% 
+%%  When a game crashes or exits, player processes get notified
+%% When a player process crashes or exits, game processes must come down too.
+%%
+%% AbandoningGame
+%% Send Abandon msg to game process, wait for confirmation.
+%%   - Game Exit:  -> Idle
+%%
+%% Game Process. 
+%% State data:
+%%   Board with pieces
+%%   [PlayerPid, PlayerPid]
+%%   TurnPlayerIdx
+%% Receives messages from both players, monitors them
+%%
+%%  GameLoop:
+%%   - current player DROP N: update board, if win notify,exit else switch turns 
+
+
 
 %%
 %% Local Functions
 %%
 
 start() ->
+	io:format("Will Start", []),
 	start(8080).
 
 %% Starts the server socket and spawns the connection accepting process
