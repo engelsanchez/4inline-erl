@@ -26,6 +26,7 @@ start(Port) ->
 	io:format("Opened process ~w ~n", [Pid]).
 
 start_loop(Port) ->
+	process_flag(trap_exit, true),
 	{ok, LSock} = gen_tcp:listen(
 		Port, 
 		[binary, {backlog, 5}, {active, false}, {nodelay, true}]),
@@ -37,9 +38,9 @@ start_loop(Port) ->
 %% Main server loop, accepting incoming connections.   
 loop(LSock) ->
 	{ok, S} = gen_tcp:accept(LSock),
-	Pid = spawn(c4_player, start, [S]),
+	Pid = spawn_link(c4_player, start, [S]),
 	% Safely transfering msg reception to player process, which should expect a first message
 	% if the new process does this first, we could end up with an unexpected tcp msg in our inbox.
 	gen_tcp:controlling_process(S, Pid),
-	inet:setops(S, {active, once}),
+	inet:setops(S, [{active, once}]),
 	loop(LSock).

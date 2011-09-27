@@ -16,16 +16,8 @@
 
 % @doc Initial handshake with client, then go to Idle state if successful.
 start(S) ->
-	receive
-		{tcp, S, <<?MSG_INIT ?MSG_END>>} ->
-			send(S, ?MSG_INIT),
-			idle(S);
-		{tcp, S, _} -> 
-			% Just abort on any other message for our protection
-			exit_msg(S, ?MSG_BAD_CMD)
-	after ?INIT_TIMEOUT ->
-		exit_msg(S, ?MSG_TIMEOUT)
-	end.
+	send(S, "CONNECT4"),
+	idle(S).
 
 % @doc Sends one last message and closes the socket.
 exit_msg(S, Msg) ->
@@ -34,12 +26,12 @@ exit_msg(S, Msg) ->
 
 % @doc Sends a message after adding the standard message terminator.
 send(S, Msg) ->
-	ok = gen_tcp:send(S, [Msg | $;]).
+	ok = gen_tcp:send(S, lists:flatten([Msg | $;])).
 	
 % @doc Limbo state when no game is going on and user has not requested to join a game
 idle(S)  ->
 	receive
-		{tcp, S, <<?MSG_JOIN ?MSG_END>>} -> waiting_for_game({S, nogame});
+		{tcp, S, <<"JOIN;">>} -> waiting_for_game({S, nogame});
 		{tcp, S, _} -> exit_msg(S, ?MSG_BAD_CMD);
 		{tcp_closed, S} -> ok;
 		{tcp_error, S, Reason} -> io:format("Socket error ~w ~n", [Reason])
@@ -59,15 +51,17 @@ waiting_for_game(S) ->
 			ok = cancel_join(S), 
 			idle(S);
 		{tcp_closed, S} -> 
+			ok = cancel_join(S);
+		{tcp_error, S, _Reason} ->
 			ok = cancel_join(S)
 	after ?INTERNAL_TIMEOUT ->
 		exit_msg(S, ?MSG_BUSY)
 	end.
 
-% Message game master to forget our request to join a game, wait for response.
+% @doc Message game master to forget our request to join a game, wait for response.
 cancel_join(S) ->
 	Pid = self(),
-	c4_game_master ! { forget_game, Pid},
+	c4_game_master ! {forget_game, Pid},
 	receive
 		{game_forgotten, Pid} -> ok;
 		{game_started, Pid} ->
@@ -76,18 +70,23 @@ cancel_join(S) ->
 					abandon_game(S, GamePid),
 					ok
 			end
+	after ?INTERNAL_TIMEOUT ->
+		exit_msg(S, ?MSG_BUSY)
 	end.
 
+% @doc Waiting for this player to move state.
 my_turn(S, GamePid) ->
 	receive
 		{tcp, S, Bin} 
 		when ?ends_with(Bin, <<?MSG_QUIT ?MSG_END>>) ->
 			abandon_game(S, GamePid),
 			idle(S);
-		% @todo needs change to support more than 9 columns.
+		% @todo needs change to support more than 9 columns!
 		{tcp, S, <<"DROP ", Col:8/integer, ";">>} ->
 			GamePid ! {self(), drop, list_to_integer([Col])},
-			other_turn;
+			other_turn(S, GamePid);
+		{tcp, S, _} ->
+			exit_msg(S, ?MSG_BAD_CMD);
 		{tcp_closed, S} ->
 			io:format("Connection closed ~n", []);
 		{tcp_error, S, Reason} ->
@@ -95,30 +94,31 @@ my_turn(S, GamePid) ->
 		{GamePid, player_left} ->
 			send(S, "EXITED"),
 			idle(S);
-		_ -> 
+		_ ->
 			goodbye(S)
-%   - Disconnect -> AbortGame, Abort
-%   - Connection error -> AbortGame, Abort
-%   - Game error, dies -> GameError, Idle
-%   - Game, bad move -> AbortGame, Abort
-%
-%  When a game crashes or exits, player processes get notified
+%   @todo Handle game process dying unexpectedly
 	end.
 
+% @doc Waiting for other player to move state.
 other_turn(S, GamePid) ->
 	receive
+		{GamePid, you_win} ->
+			send(S, "YOU_WIN"),
+			idle(S);
 		{GamePid, dropped, Col} ->
-			send(S, ["DROPPED ", erlang:integer_to_list(Col), ?MSG_END]),
+			send(S, ["DROPPED ", erlang:integer_to_list(Col)]),
 			my_turn(S, GamePid);
 		{GamePid, dropped_won, Col} ->
-			send(S, ["DROPPED ", erlang:integer_to_list(Col), "  WON" ?MSG_END]),
+			send(S, ["DROPPED ", erlang:integer_to_list(Col), "  WON"]),
 			idle(S);
 		{GamePid, player_left} ->
 			send(S, "EXITED"),
 			idle(S);
-		{tcp, S, "QUIT" ?MSG_END} ->
+		{tcp, S, <<"QUIT" ?MSG_END>>} ->
 			abandon_game(S,GamePid),
-			idle(S)
+			idle(S);
+		{tcp, S, _} ->
+			exit_msg(S, ?MSG_BAD_CMD)
 %   - Game error, dies -> GameError, Idle
 	end.
 

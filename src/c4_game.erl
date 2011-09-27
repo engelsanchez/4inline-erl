@@ -12,7 +12,13 @@
 % @doc Starts game process
 % @todo who decides who playes first?
 start(P1, P2, PTurn, Nr, Nc) when PTurn == P1; PTurn == P2 ->
-	spawn(?MODULE, start_loop, [{P1, P2, PTurn, board(Nc, Nr)}]).
+	spawn_link(?MODULE, start_loop, [{P1, P2, PTurn, board(Nr, Nc)}]).
+
+% @doc Returns an  board as a tuple containing Nr row tuples 
+% each with Nc columns (all zeroes).
+board(Nr, Nc) ->
+	Row = erlang:make_tuple(Nc, 0),
+	erlang:make_tuple(Nr, 0, [{P,Row} || P <- lists:seq(1,Nr)]).
 
 % Sets up monitors for player processes and starts main loop.
 start_loop({P1, P2, PTurn, Board}) ->
@@ -25,12 +31,6 @@ start_loop({P1, P2, PTurn, Board}) ->
 	
 % @doc Receives messages from both players, monitors them
 loop({P1, P1Ref, P2, P2Ref, PTurn, Board}) ->
-%   - current player moves: 
-%        update board, if win notify,exit else switch turns 
-%    - other player moves
-%        send out of turn msg to player process
-%    - lose a player (disconnects, process dies)
-%         notify other player, exit
 	Piece = case PTurn of P1 -> 1; P2 -> 2 end,
 	receive
 		{'DOWN', P1Ref, process, _, _} -> 
@@ -42,13 +42,16 @@ loop({P1, P1Ref, P2, P2Ref, PTurn, Board}) ->
 			case add_piece(Board, Piece, Col) of
 				{ok, NewBoard, Row} ->
 					case check_win(NewBoard, Row, Col) of
-						true -> NewP ! {self(), dropped_won, Col};
+						true -> 
+							PTurn ! {self(), you_win},
+							NewP ! {self(), dropped_won, Col};
 						false -> 
 							NewP ! {self(), dropped, Col},
 							loop({P1, P1Ref, P2, P2Ref, NewP, NewBoard})
 					end;
 				{full, _} ->
-					PTurn ! {self(), bad_move}
+					PTurn ! {self(), bad_move},
+					NewP ! {self(), player_left}
 			end
 	end.
 
@@ -58,9 +61,9 @@ other_player(P1, P2, Player) ->
 		P2 -> P1
 	end.
 
-% @doc Adds a piece to the board, returning
+% @doc Drops a piece to the board down the given column, returning
 % {ok, NewBoard} if ok
-% {full, Board} if
+% {full, Board} if column full
 add_piece(Board, Piece, Col) ->
 	case free_row(Board, Col) of
 		% @todo look into not handling full and let game die on bad move.
@@ -106,23 +109,19 @@ check_win(Board, Row, Col, Val, {Dr, Dc}) ->
 	count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc})
 	+ count(Board, Row-Dr, Col-Dc, Val, {-Dr, -Dc})
 	+ 1 >= ?NUM_INLINE.
-	
-count(Board, Row, Col, _Val, {_Dr, _Dc}) 
-	when 
+
+% @doc Counts the number of pieces of a given value starting
+% at a given position and along a given direction.
+count(Board, Row, Col, Val, {Dr, Dc}) ->
+	count(Board, Row, Col, Val, {Dr, Dc}, 0).
+
+count(Board, Row, Col, _Val, {_Dr, _Dc}, Acc) 
+	when
 		Row > tuple_size(Board); 
 		Row < 1; 
 		Col > tuple_size(element(1, Board));
 		Col < 1
-	-> 0;
-count(Board, Row, Col, Val, {Dr, Dc}) -> 
-	case ?piece(Board, Row, Col) of
-		Val -> 1;
-		_ -> 0
-	end
-	+ count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc}).
-	
-% @doc Returns an  board as a tuple containing Nr row tuples 
-% each with Nc columns (all zeroes).
-board(Nr, Nc) ->
-	Row = erlang:make_tuple(Nc, 0),
-	erlang:make_tuple(Nr, 0, [{P,Row} || P <- lists:seq(1,Nr)]).
+	-> Acc;
+count(Board, Row, Col, Val, {Dr, Dc}, Acc) -> 
+	count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc}, 
+		Acc + case ?piece(Board, Row, Col) of Val -> 1; _ -> 0 end).
