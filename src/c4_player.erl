@@ -26,7 +26,7 @@ exit_msg(S, Msg) ->
 
 % @doc Sends a message after adding the standard message terminator.
 send(S, Msg) ->
-	ok = gen_tcp:send(S, lists:flatten([Msg | $;])).
+	ok = gen_tcp:send(S, [Msg, $;]).
 	
 % @doc Limbo state when no game is going on and user has not requested to join a game
 idle(S)  ->
@@ -41,11 +41,16 @@ idle(S)  ->
 % @todo handle long delay with user requesting quit game?
 waiting_for_game(S) ->
 	Pid = self(),
+	io:format("~w Will contact game master to join a game ~n", [self()]),
 	c4_game_master ! { join_game, Pid },
 	receive
 		{new_game, play, GamePid} -> 
+			io:format("~w I'm in a game. My turn", [self()]),
+			send(S, "JOINED;PLAY;"),
 			my_turn(S, GamePid);
 		{new_game, wait, GamePid} -> 
+			io:format("~w I'm in a game. Not my turn", [self()]),
+			send(S, "JOINED;WAIT;"),
 			other_turn(S, GamePid);
 		{tcp, S, <<?MSG_QUIT ?MSG_END>>} -> 
 			ok = cancel_join(S), 
@@ -54,8 +59,6 @@ waiting_for_game(S) ->
 			ok = cancel_join(S);
 		{tcp_error, S, _Reason} ->
 			ok = cancel_join(S)
-	after ?INTERNAL_TIMEOUT ->
-		exit_msg(S, ?MSG_BUSY)
 	end.
 
 % @doc Message game master to forget our request to join a game, wait for response.

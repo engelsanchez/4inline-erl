@@ -32,7 +32,7 @@ start_loop(Port) ->
 		[binary, {backlog, 5}, {active, false}, {nodelay, true}]),
 	io:format("Listening on port ~w ~n", [Port]),
 	% Spawn game master process
-	spawn_link(c4_game_master, start, [?DEFAULT_ROWS, ?DEFAULT_COLS]),
+	c4_game_master:start(?DEFAULT_ROWS, ?DEFAULT_COLS),
 	loop(LSock).
 
 %% Main server loop, accepting incoming connections.   
@@ -42,5 +42,5 @@ loop(LSock) ->
 	% Safely transfering msg reception to player process, which should expect a first message
 	% if the new process does this first, we could end up with an unexpected tcp msg in our inbox.
 	gen_tcp:controlling_process(S, Pid),
-	inet:setops(S, [{active, once}]),
+	inet:setopts(S, [{active, once}]),
 	loop(LSock).

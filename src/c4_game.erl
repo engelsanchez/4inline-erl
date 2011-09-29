@@ -21,7 +21,7 @@ board(Nr, Nc) ->
 	erlang:make_tuple(Nr, 0, [{P,Row} || P <- lists:seq(1,Nr)]).
 
 % Sets up monitors for player processes and starts main loop.
-start_loop({P1, P2, PTurn, Board}) ->
+start_loop({P1, P2, PTurn, Board}) when is_pid(P1) and is_pid(P2) and ((PTurn == P1) or (PTurn == P2)) and is_tuple(Board) ->
 	P1Ref = monitor(process, P1),
 	P2Ref = monitor(process, P2),
 	POther = other_player(P1, P2, PTurn),
