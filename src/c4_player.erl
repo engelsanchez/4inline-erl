@@ -30,8 +30,10 @@ send(S, Msg) ->
 	
 % @doc Limbo state when no game is going on and user has not requested to join a game
 idle(S)  ->
+	inet:setopts(S, [{active, once}]),
 	receive
-		{tcp, S, <<"JOIN;">>} -> waiting_for_game({S, nogame});
+		{tcp, S, <<"JOIN;">>} ->
+			waiting_for_game(S);
 		{tcp, S, _} -> exit_msg(S, ?MSG_BAD_CMD);
 		{tcp_closed, S} -> ok;
 		{tcp_error, S, Reason} -> io:format("Socket error ~w ~n", [Reason])
@@ -43,14 +45,15 @@ waiting_for_game(S) ->
 	Pid = self(),
 	io:format("~w Will contact game master to join a game ~n", [self()]),
 	c4_game_master ! { join_game, Pid },
+	inet:setopts(S, [{active, once}]),
 	receive
-		{new_game, play, GamePid} -> 
+		{new_game, play, GamePid} ->
 			io:format("~w I'm in a game. My turn", [self()]),
-			send(S, "JOINED;PLAY;"),
+			send(S, "JOINED;PLAY"),
 			my_turn(S, GamePid);
 		{new_game, wait, GamePid} -> 
 			io:format("~w I'm in a game. Not my turn", [self()]),
-			send(S, "JOINED;WAIT;"),
+			send(S, "JOINED;WAIT"),
 			other_turn(S, GamePid);
 		{tcp, S, <<?MSG_QUIT ?MSG_END>>} -> 
 			ok = cancel_join(S), 
@@ -65,6 +68,7 @@ waiting_for_game(S) ->
 cancel_join(S) ->
 	Pid = self(),
 	c4_game_master ! {forget_game, Pid},
+	inet:setopts(S, [{active, once}]),
 	receive
 		{game_forgotten, Pid} -> ok;
 		{game_started, Pid} ->
@@ -79,6 +83,7 @@ cancel_join(S) ->
 
 % @doc Waiting for this player to move state.
 my_turn(S, GamePid) ->
+	inet:setopts(S, [{active, once}]),
 	receive
 		{tcp, S, Bin} 
 		when ?ends_with(Bin, <<?MSG_QUIT ?MSG_END>>) ->
@@ -104,6 +109,7 @@ my_turn(S, GamePid) ->
 
 % @doc Waiting for other player to move state.
 other_turn(S, GamePid) ->
+	inet:setopts(S, [{active, once}]),
 	receive
 		{GamePid, you_win} ->
 			send(S, "YOU_WIN"),

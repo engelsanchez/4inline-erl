@@ -5,7 +5,7 @@
 % Spawns and registers game master process
 start(Nr, Nc) ->
 	ParentPid = self(),
-	Pid = spawn_link(c4_game_master, start_loop, [{ParentPid, Nr, Nc, none}]),
+	Pid = spawn_link(?MODULE, start_loop, [{ParentPid, Nr, Nc, none}]),
 	register(?MODULE, Pid),
 	Pid.
 
@@ -25,16 +25,7 @@ loop({ParentPid, Nr, Nc, P1}) ->
 		{'EXIT', _Pid, _Reason} ->
 			loop({ParentPid, Nr, Nc, P1});
 		{join_game, P2} ->
-			io:format("~w wants to join a game ~n", [P2]),
-			NewP = 
-				case P1 of 
-					none -> P2;
-					_ ->
-						c4_game:start(P1, P2, P1, Nr, Nc),
-						none
-				end,
-			erlang:monitor(process, P2),
-			loop({ParentPid, Nr, Nc, NewP});
+			handle_join(ParentPid, Nr, Nc, P1, P2);
 		% Current player wants to forget about joining
 		{forget_game, P1} ->
 			P1 ! {game_forgotten, P1},
@@ -46,3 +37,15 @@ loop({ParentPid, Nr, Nc, P1}) ->
 		BadMsg ->
 			io:format("Unexpected message to game master ~w ~n", [BadMsg])
 	end.
+
+handle_join(ParentPid,Nr,Nc,P1,P2) ->
+	io:format("~w wants to join a game ~n", [P2]),
+	NewP = 
+		case 
+			P1 of none -> P2; 
+			_ when is_pid(P1) -> 
+				c4_game:start(P1, P2, P1, Nr, Nc), 
+				none 
+		end,
+	erlang:monitor(process, P2),
+	loop({ParentPid, Nr, Nc, NewP}).
