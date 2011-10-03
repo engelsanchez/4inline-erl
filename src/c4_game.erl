@@ -1,4 +1,5 @@
 %% Description: Process that handles game play, receives commands from player processes
+-compile(export_all).
 -module(c4_game).
 -export([start/5,start_loop/1]).
 
@@ -62,7 +63,7 @@ other_player(P1, P2, Player) ->
 	end.
 
 % @doc Drops a piece to the board down the given column, returning
-% {ok, NewBoard} if ok
+% {ok, NewBoard, Row} if ok
 % {full, Board} if column full
 add_piece(Board, Piece, Col) ->
 	case free_row(Board, Col) of
@@ -78,7 +79,7 @@ free_row(Board, Col) ->
 
 % @doc recursively find first available slot in column.
 free_row(Board, Col, Idx, Nr) ->
-	case Idx >= Nr of
+	case Idx > Nr of
 		true -> full;
 		false ->	
 			case ?piece(Board, Idx, Col) == 0 of
@@ -103,7 +104,7 @@ check_win(_Board, _Row, _Col, _Val, []) ->
 check_win(Board, Row, Col, Val, [ {Dr, Dc} | T ]) ->
 	case check_win(Board, Row, Col, Val, {Dr, Dc}) of
 		true -> true;
-		false -> check_win(Board, Row, Col, Val, [T])
+		false -> check_win(Board, Row, Col, Val, T)
 	end;
 check_win(Board, Row, Col, Val, {Dr, Dc}) ->
 	count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc})
@@ -125,3 +126,56 @@ count(Board, Row, Col, _Val, {_Dr, _Dc}, Acc)
 count(Board, Row, Col, Val, {Dr, Dc}, Acc) -> 
 	count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc}, 
 		Acc + case ?piece(Board, Row, Col) of Val -> 1; _ -> 0 end).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Unit tests
+-include_lib("eunit/include/eunit.hrl").
+
+board_test_() ->
+	[
+		?_assertEqual({{0,0},{0,0}}, board(2,2)),
+		?_assertEqual({{0,0,0},{0,0,0},{0,0,0}}, board(3,3))
+	].
+
+other_player_test_() ->
+	[
+		?_assertEqual(3, other_player(4,3,4)),
+		?_assertEqual(4, other_player(4,3,3)),
+		?_assertError({case_clause, 5}, other_player(4,3,5))
+	].
+
+add_piece_test_() ->
+	[
+		?_assertEqual({ok, {{1,0},{0,0}},1} , add_piece(board(2,2), 1, 1)),
+		?_assertEqual({ok, {{0,1,0},{0,0,0},{0,0,0}},1} , add_piece(board(3,3), 1, 2))
+	].
+
+set_piece_test_() ->
+	[
+	 	?_assertEqual({{0,0},{0,2}}, set_piece({{0,0}, {0,0}}, 2, 2, 2)),
+	 	?_assertEqual({{0,0,0},{0,2,0},{0,0,0}}, set_piece({{0,0,0},{0,0,0},{0,0,0}}, 2, 2, 2))
+	].
+
+check_win_test_() ->
+	[
+	 	?_assert(check_win({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1))
+	].
+
+count_test_() ->
+	[
+		?_assertEqual(4, count({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1, 1, {0, 1})),
+		?_assertEqual(0, count({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1, 2, {0, 1})),
+		?_assertEqual(1, count({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1, 1, {1, 1})),
+		?_assertEqual(1, count({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1, 1, {1, 0})),
+		?_assertEqual(3, count({{1,1,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,0}}, 1, 1, 1, {1, 1})),
+		?_assertEqual(2, count({{1,1,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,0}}, 1, 1, 1, {0, 1})),
+		?_assertEqual(1, count({{1,1,0,0},{0,1,0,0},{0,0,1,0},{0,0,0,0}}, 1, 1, 1, {1, 0}))
+	].
+
+free_row_test_() ->
+	[
+		?_assertEqual(1, free_row({{0,0},{0,0}}, 1)),
+		?_assertEqual(1, free_row({{0,0},{0,0}}, 2)),
+		?_assertEqual(2, free_row({{1,0},{0,0}}, 1)),
+		?_assertEqual(1, free_row({{1,0},{0,0}}, 2))
+	].
