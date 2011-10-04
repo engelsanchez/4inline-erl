@@ -9,9 +9,10 @@
 % </ul>
 %
 -module(c4_server).
--export([start/0,start/1,start_loop/1, player_master/0]).
+-export([start/0,start/1,start_loop/1, player_master/0,policy_master/0, serve_policy/2]).
 
 -define(DEFAULT_PORT,8080).
+-define(POLICY_PORT, 8043).
 -define(DEFAULT_ROWS, 7).
 -define(DEFAULT_COLS, 6).
 
@@ -34,6 +35,7 @@ start_loop(Port) ->
 	% Spawn game master process
 	c4_game_master:start(?DEFAULT_ROWS, ?DEFAULT_COLS),
 	PPid = spawn_link(?MODULE, player_master, []),
+	spawn_link(?MODULE, policy_master, []),
 	loop(LSock, PPid).
 
 % @doc Main server loop, accepting incoming connections.   
@@ -53,8 +55,8 @@ player_loop() ->
 	receive
 		{new_player, S} ->
 			Pid = spawn_link(c4_player, start, [S]),
-			% Safely transfering msg reception to player process, which should expect a first message
-			% if the new process does this first, we could end up with an unexpected tcp msg in our inbox.
+			% Safely transfering msg reception to player process, which should expect a first message with tcp payload.
+			% If the new process sets active=once before passing control to it, we could end up with an unexpected tcp msg in our inbox.
 			gen_tcp:controlling_process(S, Pid),
 			inet:setopts(S, [{active, once}]),
 			player_loop();
@@ -62,3 +64,37 @@ player_loop() ->
 			io:format("Player process finished ~w : ~w ~n", [Pid, Reason]),
 			player_loop()
 	end.
+
+policy_master() ->
+	Port = ?POLICY_PORT,
+	{ok, LSock} = gen_tcp:listen(
+		Port, 
+		[binary, {backlog, 5}, {active, false}, {nodelay, true}]),
+	io:format("Policy server listening on port ~w ~n", [Port]),
+	policy_loop(LSock).
+
+policy_loop(LS) ->
+	{ok, S} = gen_tcp:accept(LS),
+	Ref = erlang:make_ref(),
+	Pid = spawn(?MODULE, serve_policy, [Ref, S]),
+	Pid ! { Ref, serve },
+	policy_loop(LS).
+
+serve_policy(Ref, S) ->
+	receive
+		{Ref, serve} ->
+			{ok, {Addr, Port}} = inet:peername(S),
+			{ok, Hostent} = inet:gethostbyaddr(Addr),
+			io:format("Sending policy to ~w ~n", {{Addr,Port,Hostent}}),
+			gen_tcp:send(S, 
+				"<?xml version='1.0'?>"
+				"<cross-domain-policy>"
+				"<allow-access-from domain='*' to-ports='8080'/>"
+				"</cross-domain-policy>"),
+			gen_tcp:close(S);
+		Msg -> 
+			io:format("Unexpected message for serve_policy ~w ~n", [Msg])
+	after 5000 -> 
+		io:format("server policy timed out ~n", [])
+	end.
+	

@@ -36,7 +36,7 @@ loop({P1, P1Ref, P2, P2Ref, PTurn, Board}) ->
 	receive
 		{'DOWN', P1Ref, process, _, _} -> 
 			P2 ! {game, player_left};
-		{'DOWN', P2Ref, process, _, _} -> 
+		{'DOWN', P2Ref, process, _, _} ->
 			P1 ! {game, player_left};
 		{PTurn, drop, Col} ->
 			NewP = other_player(P1, P2, PTurn),
