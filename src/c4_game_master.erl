@@ -19,23 +19,27 @@ start_loop({ParentPid, Nr, Nc, P1}) ->
 loop({ParentPid, Nr, Nc, P1}) ->
 	receive
 		{'EXIT', ParentPid, Reason} ->
+			io:format("Parent process exited, so quittting ~n", []),
 			exit(Reason);
 		{'EXIT', P1, _Reason} when is_pid(P1) ->
 			loop({ParentPid, Nr, Nc, none});
 		{'EXIT', _Pid, _Reason} ->
 			loop({ParentPid, Nr, Nc, P1});
 		{join_game, P2} ->
+			io:format("Process ~w wants to join game ~n",[P2]),
 			handle_join(ParentPid, Nr, Nc, P1, P2);
 		% Current player wants to forget about joining
 		{forget_game, P1} ->
+			io:format("Process ~w wants to cancel join~n", [P1]),
 			P1 ! {game_forgotten, P1},
 			loop({ParentPid, Nr, Nc, none});
 		% Player already in a game sent request to forget about it.
 		{forget_game, OldP} ->
+			io:format("Process ~w wants to cancel join, already in a game~n", [OldP]),
 			OldP ! {game_started, OldP},
 			loop({ParentPid, Nr, Nc, P1});
 		BadMsg ->
-			io:format("Unexpected message to game master ~w ~n", [BadMsg])
+			io:format("Unexpected message for game master ~w ~n", [BadMsg])
 	end.
 
 handle_join(ParentPid,Nr,Nc,P1,P2) ->

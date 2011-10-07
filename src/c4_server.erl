@@ -28,6 +28,7 @@ start(Port) ->
 
 % Setup for the main socket listening loop.
 start_loop(Port) ->
+	register(c4_server, self()),
 	{ok, LSock} = gen_tcp:listen(
 		Port, 
 		[binary, {backlog, 5}, {active, false}, {nodelay, true}]),
@@ -62,10 +63,13 @@ player_loop() ->
 			player_loop();
 		{'DOWN', Pid, Reason} ->
 			io:format("Player process finished ~w : ~w ~n", [Pid, Reason]),
-			player_loop()
+			player_loop();
+		BadMsg ->
+			io:format("Unexpected message to player master ~w ~n", [BadMsg])
 	end.
 
 policy_master() ->
+	register(policy_master, self()),
 	Port = ?POLICY_PORT,
 	{ok, LSock} = gen_tcp:listen(
 		Port, 
@@ -77,6 +81,7 @@ policy_loop(LS) ->
 	{ok, S} = gen_tcp:accept(LS),
 	Ref = erlang:make_ref(),
 	Pid = spawn(?MODULE, serve_policy, [Ref, S]),
+	gen_tcp:controlling_process(S, Pid),
 	Pid ! { Ref, serve },
 	policy_loop(LS).
 
@@ -84,8 +89,8 @@ serve_policy(Ref, S) ->
 	receive
 		{Ref, serve} ->
 			{ok, {Addr, Port}} = inet:peername(S),
-			{ok, Hostent} = inet:gethostbyaddr(Addr),
-			io:format("Sending policy to ~w ~n", {{Addr,Port,Hostent}}),
+%			{ok, Hostent} = inet:gethostbyaddr(Addr),
+			io:format("Sending policy to ~w ~n", [{Addr,Port}]),
 			gen_tcp:send(S, 
 				"<?xml version='1.0'?>"
 				"<cross-domain-policy>"
@@ -95,6 +100,6 @@ serve_policy(Ref, S) ->
 		Msg -> 
 			io:format("Unexpected message for serve_policy ~w ~n", [Msg])
 	after 5000 -> 
-		io:format("server policy timed out ~n", [])
+		io:format("server policy processed timed out on receive ~n", [])
 	end.
 	
