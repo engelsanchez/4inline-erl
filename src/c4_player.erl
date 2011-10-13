@@ -16,6 +16,8 @@
 
 % @doc Initial handshake with client, then go to Idle state if successful.
 start(S) ->
+	{ok, {Addr, Port}} = inet:peername(S),
+	io:format("Starting player process for ~w ~n", [{Addr,Port,self()}]),
 	send(S, "CONNECT4"),
 	idle(S).
 

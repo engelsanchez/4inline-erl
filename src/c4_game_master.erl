@@ -11,19 +11,15 @@ start(Nr, Nc) ->
 
 % @doc Initial process setup and into main loop.
 start_loop({ParentPid, Nr, Nc, P1}) ->
-	process_flag(trap_exit, true),
 	loop({ParentPid, Nr, Nc, P1}).
 
 % @doc Game master loop. Receives request from player processes to join
 % a game or forget about joining a game.
 loop({ParentPid, Nr, Nc, P1}) ->
 	receive
-		{'EXIT', ParentPid, Reason} ->
-			io:format("Parent process exited, so quittting ~n", []),
-			exit(Reason);
-		{'EXIT', P1, _Reason} when is_pid(P1) ->
+		{'DOWN', Ref, process, P1, _Reason} when is_reference(Ref), is_pid(P1) ->
 			loop({ParentPid, Nr, Nc, none});
-		{'EXIT', _Pid, _Reason} ->
+		{'DOWN', Ref, process, P2, _Reason} when is_reference(Ref), is_pid(P2) ->
 			loop({ParentPid, Nr, Nc, P1});
 		{join_game, P2} ->
 			io:format("Process ~w wants to join game ~n",[P2]),
