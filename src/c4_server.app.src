@@ -1,0 +1,12 @@
+{application, c4_server,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { c4_server, []}},
+  {env, []}
+ ]}.
