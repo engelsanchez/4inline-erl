@@ -1,7 +1,10 @@
 %% Description: Process that handles game play, receives commands from player processes
--compile(export_all).
+%% TODO: Consider moving board code out (to c4_board)
+%% For boards, row 0 is bottom, column 0 is left.
 -module(c4_game).
--export([start/5,start_loop/1]).
+-behaviour(gen_fsm).
+-export([init/1, playing/3, terminate/3]).
+-export([start/1, start_link/1, play/3, quit/2]).
 
 % Number of pieces required to be in a line for a win.
 -define(NUM_INLINE, 4).
@@ -9,66 +12,90 @@
 -define(piece(Board, Row, Col),element(Col, element(Row, Board))).
 -define(num_rows(Board), erlang:tuple_size(Board)).
 -define(num_cols(Board), erlang:tuple_size(element(1, Board))).
+-record(state, {p1, p1ref, color1, p2, p2ref, color2, board}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Public API
+% @doc Starts game process
+start(Args) ->
+	gen_fsm:start(?MODULE, Args, []).
 
 % @doc Starts game process
-% @todo who decides who playes first?
-start(P1, P2, PTurn, Nr, Nc) when PTurn == P1; PTurn == P2 ->
-	spawn_link(?MODULE, start_loop, [{P1, P2, PTurn, board(Nr, Nc)}]).
+start_link(Args) ->
+	gen_fsm:start_link(?MODULE, Args, []).
 
-% @doc Returns an  board as a tuple containing Nr row tuples 
+% @doc Player drops a piece
+play(GamePid, PlayerPid, Col) ->
+	gen_fsm:sync_send_event(GamePid, {play, PlayerPid, Col}).
+
+quit(GamePid, PlayerPid) ->
+	gen_fsm:sync_send_event(GamePid, {quit, PlayerPid}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% FSM functions
+
+init({P1, P2, Nr, Nc}) when is_pid(P1), is_pid(P2), is_integer(Nr), is_integer(Nc), Nr > 0, Nc > 0  ->
+	P1Ref = monitor(process, P1),
+	P2Ref = monitor(process, P2),
+	{ok, playing, #state{p1=P1, p1ref=P1Ref, color1=first, p2=P2, p2ref=P2Ref, color2=second, board=board(Nr, Nc)}}.
+
+% @doc Waiting for a move
+% returns: 
+%   invalid_move
+%   not_your_turn
+%   ok
+%   you_win
+% May send message to other player:
+%   played, Col, you_lose|your_turn
+playing({play, P2, _Col}, _From, #state{p2=P2} = State) ->
+	{reply, not_your_turn, playing, State};
+playing({play, P1, Col}, _From, #state{p1=P1, color1=Color, p2=P2, board=Board} = State) ->
+	case add_piece(Board, Color, Col) of
+		{ok, NewBoard, Row} ->
+			case check_win(NewBoard, Row, Col) of
+				true ->
+					c4_player:played(P2, self(), Col, you_lose), 
+					{stop, {win, color1}, you_win, State};
+				false -> 
+					c4_player:played(P2, self(), Col, your_turn),
+					{reply, ok, playing, turn_change(State)}
+			end;
+		invalid_move -> 
+			{reply, invalid_move, playing, State}
+	end;
+playing({quit, P1}, _From, #state{p1=P1, p2=P2} = State) ->
+	c4_player:other_quit(P2, self()),
+	{stop, player_quit, ok, State};
+playing({quit, P2}, _From, #state{p1=P1, p2=P2} = State) ->
+	c4_player:other_quit(P1, self()),
+	{stop, player_quit, ok, State}.
+
+
+% @doc No real cleanup upon game end
+terminate(_Reason, _StateName, _State) ->
+	ok.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Internal functions
+
+% @doc Switches players around in state data.
+turn_change(#state { p1=P1, p1ref=P1Ref, color1=Color1, p2=P2, p2ref=P2Ref, color2=Color2} = State) ->
+	State#state{p1=P2, p1ref=P2Ref, color1=Color2, p2=P1, p2ref=P1Ref, color2=Color1}.
+
+% @doc Returns a game board as a tuple containing Nr row tuples 
 % each with Nc columns (all zeroes).
 board(Nr, Nc) ->
 	Row = erlang:make_tuple(Nc, 0),
 	erlang:make_tuple(Nr, 0, [{P,Row} || P <- lists:seq(1,Nr)]).
 
-% Sets up monitors for player processes and starts main loop.
-start_loop({P1, P2, PTurn, Board}) when is_pid(P1) and is_pid(P2) and ((PTurn == P1) or (PTurn == P2)) and is_tuple(Board) ->
-	P1Ref = monitor(process, P1),
-	P2Ref = monitor(process, P2),
-	POther = other_player(P1, P2, PTurn),
-	PTurn ! {new_game, play, self()},
-	POther ! {new_game, wait, self()},
-	loop({P1, P1Ref, P2, P2Ref, PTurn, Board}).
-	
-% @doc Receives messages from both players, monitors them
-loop({P1, P1Ref, P2, P2Ref, PTurn, Board}) ->
-	Piece = case PTurn of P1 -> 1; P2 -> 2 end,
-	receive
-		{'DOWN', P1Ref, process, _, _} -> 
-			P2 ! {game, player_left};
-		{'DOWN', P2Ref, process, _, _} ->
-			P1 ! {game, player_left};
-		{PTurn, drop, Col} ->
-			NewP = other_player(P1, P2, PTurn),
-			case add_piece(Board, Piece, Col) of
-				{ok, NewBoard, Row} ->
-					case check_win(NewBoard, Row, Col) of
-						true -> 
-							PTurn ! {self(), you_win},
-							NewP ! {self(), dropped_won, Col};
-						false -> 
-							NewP ! {self(), dropped, Col},
-							loop({P1, P1Ref, P2, P2Ref, NewP, NewBoard})
-					end;
-				{full, _} ->
-					PTurn ! {self(), bad_move},
-					NewP ! {self(), player_left}
-			end
-	end.
-
-other_player(P1, P2, Player) ->
-	case Player of
-		P1 -> P2;
-		P2 -> P1
-	end.
-
 % @doc Drops a piece to the board down the given column, returning
 % {ok, NewBoard, Row} if ok
-% {full, Board} if column full
+% invalid_move if column full or bad column number
+add_piece(Board, _Piece, Col) when Col < 0; Col >= ?num_cols(Board) ->
+	invalid_move;
 add_piece(Board, Piece, Col) ->
 	case free_row(Board, Col) of
-		% @todo look into not handling full and let game die on bad move.
-	    full -> {full, Board};
+		full -> invalid_move;
 		Row  -> {ok, set_piece(Board, Row, Col, Piece), Row}
 	end.
 
@@ -135,13 +162,6 @@ board_test_() ->
 	[
 		?_assertEqual({{0,0},{0,0}}, board(2,2)),
 		?_assertEqual({{0,0,0},{0,0,0},{0,0,0}}, board(3,3))
-	].
-
-other_player_test_() ->
-	[
-		?_assertEqual(3, other_player(4,3,4)),
-		?_assertEqual(4, other_player(4,3,3)),
-		?_assertError({case_clause, 5}, other_player(4,3,5))
 	].
 
 add_piece_test_() ->

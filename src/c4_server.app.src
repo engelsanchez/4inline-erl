@@ -1,11 +1,15 @@
 {application, c4_server,
  [
-  {description, ""},
+  {description, "4 in line websocket server"},
   {vsn, "1"},
-  {registered, []},
+  {registered, [c4_game_master]},
   {applications, [
                   kernel,
-                  stdlib
+                  stdlib,
+		  crypto,
+		  public_key,
+		  ssl,
+		  cowboy
                  ]},
   {mod, { c4_server, []}},
   {env, []}
