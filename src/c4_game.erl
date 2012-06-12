@@ -13,6 +13,7 @@
 -define(num_rows(Board), erlang:tuple_size(Board)).
 -define(num_cols(Board), erlang:tuple_size(element(1, Board))).
 -record(state, {p1, p1ref, color1, p2, p2ref, color2, board}).
+-include("c4_common.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
@@ -35,6 +36,7 @@ quit(GamePid, PlayerPid) ->
 %% FSM functions
 
 init({P1, P2, Nr, Nc}) when is_pid(P1), is_pid(P2), is_integer(Nr), is_integer(Nc), Nr > 0, Nc > 0  ->
+	?log("Starting~n", []),
 	P1Ref = monitor(process, P1),
 	P2Ref = monitor(process, P2),
 	{ok, playing, #state{p1=P1, p1ref=P1Ref, color1=first, p2=P2, p2ref=P2Ref, color2=second, board=board(Nr, Nc)}}.
@@ -50,15 +52,17 @@ init({P1, P2, Nr, Nc}) when is_pid(P1), is_pid(P2), is_integer(Nr), is_integer(N
 playing({play, P2, _Col}, _From, #state{p2=P2} = State) ->
 	{reply, not_your_turn, playing, State};
 playing({play, P1, Col}, _From, #state{p1=P1, color1=Color, p2=P2, board=Board} = State) ->
+	?log("Player ~w played ~w~n", [P1, Col]),
 	case add_piece(Board, Color, Col) of
 		{ok, NewBoard, Row} ->
+			?log("Board ~w~n", [NewBoard]),
 			case check_win(NewBoard, Row, Col) of
 				true ->
 					c4_player:played(P2, self(), Col, you_lose), 
-					{stop, {win, color1}, you_win, State};
+					{stop, {win, color1}, you_win, State#state{board=NewBoard}};
 				false -> 
 					c4_player:played(P2, self(), Col, your_turn),
-					{reply, ok, playing, turn_change(State)}
+					{reply, ok, playing, turn_change(State#state{board=NewBoard})}
 			end;
 		invalid_move -> 
 			{reply, invalid_move, playing, State}
@@ -68,7 +72,10 @@ playing({quit, P1}, _From, #state{p1=P1, p2=P2} = State) ->
 	{stop, player_quit, ok, State};
 playing({quit, P2}, _From, #state{p1=P1, p2=P2} = State) ->
 	c4_player:other_quit(P1, self()),
-	{stop, player_quit, ok, State}.
+	{stop, player_quit, ok, State};
+playing(Event, _From, State) ->
+	?log("Unexpected event ~w~n", [Event]),
+	{reply, {error, bad_cmd, "Invalid commnad"}, playing, State}.
 
 
 % @doc No real cleanup upon game end

@@ -4,6 +4,7 @@
 -export([init/1, handle_info/3, loop/3, terminate/3]).
 -export([start/0, start_link/0, join/1, cancel_join/1]).
 -record(state, {rows=6, cols=7, pending=none, pref=none, parent}).
+-include("c4_common.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Public API
@@ -31,22 +32,24 @@ cancel_join(Pid) ->
 
 init(ParentPid)->
 	process_flag(trap_exit, true),
+	?log("Starting~n", []),
 	{ok, loop, #state{parent=ParentPid}}.
 
 terminate(_Reason, _Name, _Data) ->
 	ok.
 
-loop({join, Pid}, _From, #state{rows=Rows, cols=Cols, pending=Pending} = State) ->
-	io:format("~w Processing Join~n", [?MODULE]),
+loop({join, Pid}, _From, #state{rows=Rows, cols=Cols, pending=Pending, pref=PRef} = State) ->
+	?log("Processing Join~n", []),
 	case Pending of
 		none ->
-			io:format("Join pending~n"), 
-			Ref = erlang:monitor(Pid),
-			io:format("Monitoring ~w~n", [Pid]),
+			?log("Join pending 2 ~n", []), 
+			Ref = erlang:monitor(process, Pid),
+			?log("Monitoring ~w~n", [Pid]),
 			{reply, join_pending, loop, State#state{pending=Pid, pref=Ref}};
 		_ -> 
 			{ok, GamePid} = c4_game:start_link({Pending, Pid, Rows, Cols}),
-			erlang:demonitor(Pending), 
+			erlang:demonitor(PRef), 
+			c4_player:joined(Pending, GamePid, play),
 			{reply, {new_game, GamePid, wait}, loop, State#state{pending=none, pref=none}}
 	end;
 loop({cancel_join, Pid}, _From, #state{pending=Pid} = State) when is_pid(Pid) ->
