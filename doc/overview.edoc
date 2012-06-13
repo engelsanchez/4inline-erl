@@ -1,0 +1,24 @@
+@author Engel A. Sanchez
+@title 4 in-line game server.
+
+@doc
+== Description ==
+This application uses the cowboy server to handle requests.
+Cowboy spawns a process for each incoming connection, which in turns
+calls a callback module on initialization, data received and termination.
+Our callback module is {@link c4_websocket_handler}. When the websocket
+connection is created, a {@link c4_player} process is created, and when
+messages are received from the socket, they are translated into commands
+for {@link c4_player}.
+
+The main application consists of a {@link c4_server} supervisor process,
+under which there is a {@link c4_game_master} process that coordinates
+the creation of games.  For each game, there will be a {@link c4_game}
+process supervised by {@link c4_game_master}.
+
+When {@link c4_player} is told to join a game, it sends a request to
+{@link c4_game_master}.  After the game is created, it forwards move
+requests to the {@link c4_game} process.  Each {@link c4_game} process
+is attached to two different players, and when a move is received from
+a player, it is also forwarded to the other. This back and forth will
+continue until the game is over.

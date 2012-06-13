@@ -1,4 +1,4 @@
-
+.PHONY: deps app clean doc
 PROJECT = erl-4inline
 
 DIALYZER = dialyzer
@@ -18,3 +18,5 @@ clean:
 	@$(REBAR) clean
 	rm -f erl_crash.dump
 
+doc:
+	@$(REBAR) doc

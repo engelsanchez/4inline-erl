@@ -1,6 +1,9 @@
-%% Description: Process that handles game play, receives commands from player processes
-%% TODO: Consider moving board code out (to c4_board)
-%% For boards, row 0 is bottom, column 0 is left.
+%% @doc Game process interface.
+%% It receives moves from players and notifies the opponent.
+%% It also detects when a game has been won or there are no more 
+%% moves.
+%% For boards, row 1 is bottom, column 1 is left.
+%% @todo Consider moving board code out (to c4_board)
 -module(c4_game).
 -behaviour(gen_fsm).
 -export([init/1, playing/3, terminate/3]).
@@ -17,24 +20,32 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
-% @doc Starts game process
+% @doc Starts unsupervised game process, mostly for testing.
+-spec(start({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, pid()} | ignore | {error, string()}).
 start(Args) ->
 	gen_fsm:start(?MODULE, Args, []).
 
-% @doc Starts game process
+% @doc Starts game process linked to the current process.
+-spec(start_link({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, pid()} | ignore | {error, string()}).
 start_link(Args) ->
 	gen_fsm:start_link(?MODULE, Args, []).
 
-% @doc Player drops a piece
+% @doc Called when a player makes a move
+-spec(play(pid(), pid(), pos_integer()) -> invalid_move | not_your_turn | ok | you_win ).
 play(GamePid, PlayerPid, Col) ->
 	gen_fsm:sync_send_event(GamePid, {play, PlayerPid, Col}).
 
+% @doc Called when a player quits a game.
+-spec(quit(pid(), pid()) -> ok).
 quit(GamePid, PlayerPid) ->
 	gen_fsm:sync_send_event(GamePid, {quit, PlayerPid}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% FSM functions
 
+% @doc Creates the empty board and starts monitoring the player processes.
+% FSM initialization callback.
+-spec(init({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, playing, #state{}}).
 init({P1, P2, Nr, Nc}) when is_pid(P1), is_pid(P2), is_integer(Nr), is_integer(Nc), Nr > 0, Nc > 0  ->
 	?log("Starting~n", []),
 	P1Ref = monitor(process, P1),
@@ -69,23 +80,24 @@ playing({play, P1, Col}, _From, #state{p1=P1, color1=Color, p2=P2, board=Board} 
 	end;
 playing({quit, P1}, _From, #state{p1=P1, p2=P2} = State) ->
 	c4_player:other_quit(P2, self()),
-	{stop, player_quit, ok, State};
+	{stop, normal, ok, State};
 playing({quit, P2}, _From, #state{p1=P1, p2=P2} = State) ->
 	c4_player:other_quit(P1, self()),
-	{stop, player_quit, ok, State};
+	{stop, normal, ok, State};
 playing(Event, _From, State) ->
 	?log("Unexpected event ~w~n", [Event]),
 	{reply, {error, bad_cmd, "Invalid commnad"}, playing, State}.
 
 
-% @doc No real cleanup upon game end
+% @doc Does nothing as there is no real cleanup needed upon game end.
+% Generic FSM termination callback.
 terminate(_Reason, _StateName, _State) ->
 	ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Internal functions
 
-% @doc Switches players around in state data.
+% @doc Switches players around in state record.
 turn_change(#state { p1=P1, p1ref=P1Ref, color1=Color1, p2=P2, p2ref=P2Ref, color2=Color2} = State) ->
 	State#state{p1=P2, p1ref=P2Ref, color1=Color2, p2=P1, p2ref=P1Ref, color2=Color1}.
 

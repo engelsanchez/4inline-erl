@@ -1,4 +1,12 @@
-% Description: process that receives messages from game client.
+% @doc Protocol independent interface for remote 4 in-line players.
+% The functions that handle actions by our player are 
+% {@link join/1}, {@link cancel_join/1},
+% {@link play/2} and {@link quit_game/1}.
+% The functions that handle events from the other player are
+% {@link joined/3}, {@link played/4} and {@link other_quit/2}.
+% The rest are callback functions as this modules implements the generic
+% OTP gen_fsm (State machine) behavior.
+
 -module(c4_player).
 -behaviour(gen_fsm).
 % State machine exports
@@ -25,10 +33,12 @@ join(Pid) ->
 	gen_fsm:sync_send_event(Pid, {join}).
 
 % @doc Impatient player requests to forget about joining a game.
-% Returns: join_canceled | no_join_pending
+-spec(cancel_join(pid()) -> join_canceled | no_join_pending).
 cancel_join(Pid) ->
 	gen_fsm:sync_send_event(Pid, {cancel_join}).
 
+% @doc Called when paired with another player for a game
+-spec(joined(pid(), pid(), play | wait) -> {new_game, play | wait}).
 joined(Pid, GamePid, Turn) ->
 	gen_fsm:sync_send_event(Pid, {new_game, GamePid, Turn}).
 
@@ -41,13 +51,16 @@ play(Pid, Col) ->
 played(Pid, GamePid, Col, Status) ->
 	gen_fsm:sync_send_event(Pid, {c4_game, GamePid, Col, Status}).
 
+% @doc Called by our player to leave a game.
 quit_game(Pid) ->
 	gen_fsm:sync_send_event(Pid, quit_game).
 
+% @doc Should be called when the other player just quit the game.
 other_quit(Pid, GamePid) ->
 	gen_fsm:sync_send_event(Pid, {c4_game, GamePid, other_quit}).
 
-% @doc Call when the player has been disconnected
+% @doc Called when the player has been disconnected
+-spec(quit(pid()) -> ok).
 quit(Pid) when is_pid(Pid) ->
 	gen_fsm:send_all_state_event(Pid, player_quit),
 	ok.

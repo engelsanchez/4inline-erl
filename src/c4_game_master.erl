@@ -1,4 +1,8 @@
-% The game master sits in a loop spawning game processes when requested
+% @doc Coordinates the creation of games between pairs of players.
+% It mostly sits in a loop receiving join requests.  When the first
+% join request comes, the player is told to wait for another. When the
+% next one comes, the pair are put into a newly created game and
+% the process repeats over and over.
 -module(c4_game_master).
 -behaviour(gen_fsm).
 -export([init/1, handle_info/3, loop/3, terminate/3]).
@@ -9,35 +13,43 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Public API
 
-% Returns {ok, Pid} | ignore | {error, Error}
+% @doc Starts a standalone c4_game_master process. Mostly for testing.
+-spec(start() ->  {ok, pid()} | ignore | {error, binary()}).
 start() ->
 	gen_fsm:start({local, c4_game_master}, ?MODULE, self(), []).
 
-% Returns {ok, Pid} | ignore | {error, Error}
+% @doc Starts a c4_game_master process that is linked to the current
+% process.
+-spec(start_link() -> {ok, pid()} | ignore | {error, binary()}).
 start_link() ->
 	gen_fsm:start_link({local, c4_game_master}, ?MODULE, self(), []).
 
-% @doc Join request
-% Returns join_pending | {new_game, GamePid}
+% @doc Call when a player requests to join a game. 
+-spec(join(pid()) -> join_pending | {new_game, pid()}).
 join(Pid) ->
 	gen_fsm:sync_send_event(?MODULE, {join, Pid}).
 
-% @doc Cancel pending join request
-% Returns : join_canceled | no_join_pending 
+% @doc Call when a player requests to cancel a join request.
+-spec(cancel_join(pid()) -> join_canceled | no_join_pending).
 cancel_join(Pid) ->
 	gen_fsm:sync_send_event(?MODULE, {cancel_join, Pid}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% FSM callbacks
 
+% @doc Starts trapping exits and starts FSM in loop state.
+% Callback method for the OTP gen_fsm behavior.
 init(ParentPid)->
 	process_flag(trap_exit, true),
 	?log("Starting~n", []),
 	{ok, loop, #state{parent=ParentPid}}.
 
+% @doc Does nothing as there is nothing to clean up upon termination.
+% Callback function for the OTP gen_fsm behavior.
 terminate(_Reason, _Name, _Data) ->
 	ok.
 
+% @doc The main 'loop' state of this FSM handles all messages (joins and join cancellations).
 loop({join, Pid}, _From, #state{rows=Rows, cols=Cols, pending=Pending, pref=PRef} = State) ->
 	?log("Processing Join~n", []),
 	case Pending of
@@ -57,7 +69,8 @@ loop({cancel_join, Pid}, _From, #state{pending=Pid} = State) when is_pid(Pid) ->
 loop({cancel_join, Pid}, _From, State) when is_pid(Pid) ->
 	{reply, no_join_pending, loop, State}.
 
-% @doc Handles game processes ending, join pending users disconnecting
+% @doc Handles game processes ending, join pending users disconnecting.
+% Callback function for miscellaneous messages received by the FSM process.
 handle_info({'EXIT', Pid, _Reason}, _Name, #state{parent=Pid} = State) ->
 	{stop, parent_died, State};
 handle_info({'EXIT', _Pid, _Reason}, Name, State) ->
