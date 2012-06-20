@@ -6,8 +6,10 @@
 %% @todo Consider moving board code out (to c4_board)
 -module(c4_game).
 -behaviour(gen_fsm).
--export([init/1, playing/3, terminate/3]).
--export([start/1, start_link/1, play/3, quit/2]).
+% FSM callbacks
+-export([init/1, handle_event/3, handle_sync_event/4, handle_info/3, playing/3, disconnected/3, terminate/3, code_change/4]).
+% Public API
+-export([start/1, start_link/1, play/3, disconnect/2, abandon/1, quit/2, valid_board_size/1]).
 
 % Number of pieces required to be in a line for a win.
 -define(NUM_INLINE, 4).
@@ -15,18 +17,18 @@
 -define(piece(Board, Row, Col),element(Col, element(Row, Board))).
 -define(num_rows(Board), erlang:tuple_size(Board)).
 -define(num_cols(Board), erlang:tuple_size(element(1, Board))).
--record(state, {p1, p1ref, color1, p2, p2ref, color2, board}).
+-record(state, {p1, id1, p1ref, p1conn=true, color1, p2, id2, p2ref, p2conn=true, color2, board, game_var}).
 -include("c4_common.hrl").
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
 % @doc Starts unsupervised game process, mostly for testing.
--spec(start({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, pid()} | ignore | {error, string()}).
+-spec(start({pid(), pos_integer(), pid(), pos_integer(), #board_size{}, game_var()}) -> {ok, pid()} | ignore | {error, string()}).
 start(Args) ->
 	gen_fsm:start(?MODULE, Args, []).
 
 % @doc Starts game process linked to the current process.
--spec(start_link({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, pid()} | ignore | {error, string()}).
+-spec(start_link({pid(), pos_integer(), pid(), pos_integer(), #board_size{}, game_var()}) -> {ok, pid()} | ignore | {error, string()}).
 start_link(Args) ->
 	gen_fsm:start_link(?MODULE, Args, []).
 
@@ -35,22 +37,37 @@ start_link(Args) ->
 play(GamePid, PlayerPid, Col) ->
 	gen_fsm:sync_send_event(GamePid, {play, PlayerPid, Col}).
 
-% @doc Called when a player quits a game.
+% @doc Called when a player has been disconnected (may come back).
+-spec(disconnect(pid(), pid()) -> ok).
+disconnect(GamePid, PlayerPid) ->
+	gen_fsm:sync_send_event(GamePid, {disconnected, PlayerPid}).
+
+% @doc Stops the game
+abandon(GamePid) ->
+	gen_fsm:sync_send_event(GamePid, {abandon}).
+
+% @doc Called when a player actively quits a game (not just disconnects).
 -spec(quit(pid(), pid()) -> ok).
 quit(GamePid, PlayerPid) ->
 	gen_fsm:sync_send_event(GamePid, {quit, PlayerPid}).
+
+-spec(valid_board_size(#board_size{}) -> boolean()).
+valid_board_size(#board_size{rows=Rows, cols=Cols}) when not is_integer(Rows); not is_integer(Cols) -> false;
+valid_board_size(#board_size{rows=Rows, cols=Cols}) when Rows < 6; Rows > 7; Cols < 7; Cols > 10 -> false;
+valid_board_size(#board_size{rows=Rows, cols=Cols}) when Rows == 6, Cols > 7 -> false;
+valid_board_size(#board_size{} = _BoardSize) -> true.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% FSM functions
 
 % @doc Creates the empty board and starts monitoring the player processes.
 % FSM initialization callback.
--spec(init({pid(), pid(), pos_integer(), pos_integer()}) -> {ok, playing, #state{}}).
-init({P1, P2, Nr, Nc}) when is_pid(P1), is_pid(P2), is_integer(Nr), is_integer(Nc), Nr > 0, Nc > 0  ->
+-spec(init({pid(), pos_integer(), pid(), pos_integer(), #board_size{}, game_var()}) -> {ok, playing, #state{}}).
+init({P1, Id1, P2, Id2, BoardSize, GameVar}) when is_pid(P1), is_pid(P2)  ->
 	?log("Starting~n", []),
 	P1Ref = monitor(process, P1),
 	P2Ref = monitor(process, P2),
-	{ok, playing, #state{p1=P1, p1ref=P1Ref, color1=first, p2=P2, p2ref=P2Ref, color2=second, board=board(Nr, Nc)}}.
+	{ok, playing, #state{p1=P1, id1=Id1, p1ref=P1Ref, color1=first, p2=P2, id2=Id2, p2ref=P2Ref, color2=second, board=board(BoardSize), game_var=GameVar}}.
 
 % @doc Waiting for a move
 % returns: 
@@ -70,7 +87,7 @@ playing({play, P1, Col}, _From, #state{p1=P1, color1=Color, p2=P2, board=Board} 
 			case check_win(NewBoard, Row, Col) of
 				true ->
 					c4_player:played(P2, self(), Col, you_lose), 
-					{stop, {win, color1}, you_win, State#state{board=NewBoard}};
+					{stop, normal, you_win, State#state{board=NewBoard}};
 				false -> 
 					c4_player:played(P2, self(), Col, your_turn),
 					{reply, ok, playing, turn_change(State#state{board=NewBoard})}
@@ -78,32 +95,71 @@ playing({play, P1, Col}, _From, #state{p1=P1, color1=Color, p2=P2, board=Board} 
 		invalid_move -> 
 			{reply, invalid_move, playing, State}
 	end;
-playing({quit, P1}, _From, #state{p1=P1, p2=P2} = State) ->
-	c4_player:other_quit(P2, self()),
-	{stop, normal, ok, State};
-playing({quit, P2}, _From, #state{p1=P1, p2=P2} = State) ->
-	c4_player:other_quit(P1, self()),
-	{stop, normal, ok, State};
 playing(Event, _From, State) ->
 	?log("Unexpected event ~w~n", [Event]),
 	{reply, {error, bad_cmd, "Invalid commnad"}, playing, State}.
 
+% @doc One or both players have disconnected and moves are not allowed.
+% Players may reconnect at any point.
+disconnected({join, Pid, PlayerId}, _From, #state{p1=P1, id1=Id1, p1conn=P1conn, p2=P2, id2=Id2, p2conn=P2conn} = State) ->
+	case PlayerId of
+		Id1 ->
+			State2 = State#state{p1=Pid,p1conn=true},
+			case P2conn of
+				true ->
+					c4_player:other_returned(P2, self()),
+					{reply, {in_game, your_turn}, playing, State2};
+				false ->
+					{reply, {in_game, wait}, disconnected, State2}
+			end;
+		Id2 -> 
+			State2 = State#state{p2=Pid, p2conn=true},
+			case P1conn of
+				true ->
+					c4_player:other_returned(P1, self()),
+					{reply, {in_game, your_turn}, playing, State2};
+				false ->
+					{reply, {in_game, wait}, disconnected, State2}
+			end
+	end.
+
+
+% @doc Handles disconnections or requests to abandon a game.
+handle_sync_event({quit, Pid}, _From, _StateName, #state{p1=P1, p2=P2} = State) ->
+	c4_player:other_quit(case Pid of P1->P2; P2->P1 end, self()),
+	{stop, normal, ok, State};
+handle_sync_event({disconnected, Pid}, _From, _StateName, #state{p1=P1, p2=P2} = State) ->
+	State2 = case Pid of P1 -> State#state{p1conn=false}; P2 -> State#state{p2conn=false} end,
+	{reply, ok, disconnected, State2};
+handle_sync_event({abandon}, _From, _StateName, State) ->
+	{stop, normal, ok, State}.
+
+handle_event(Event, StateName, StateData) ->
+	?log("Unexpected event ~w in state ~w : ~w~n", [Event, StateName, StateData]),
+	ok.
+
+handle_info(Event, StateName, StateData) ->
+	?log("Unexpected event ~w in state ~w : ~w~n", [Event, StateName, StateData]),
+	ok.
 
 % @doc Does nothing as there is no real cleanup needed upon game end.
 % Generic FSM termination callback.
 terminate(_Reason, _StateName, _State) ->
 	ok.
 
+code_change(_OldVsn, StateName, StateData, _Extra) ->
+	{ok, StateName, StateData}.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Internal functions
 
-% @doc Switches players around in state record.
-turn_change(#state { p1=P1, p1ref=P1Ref, color1=Color1, p2=P2, p2ref=P2Ref, color2=Color2} = State) ->
-	State#state{p1=P2, p1ref=P2Ref, color1=Color2, p2=P1, p2ref=P1Ref, color2=Color1}.
+% @doc Returns a state record with the players swapped 
+turn_change(#state { p1=P1, id1=Id1, p1ref=P1Ref, color1=Color1, p2=P2, id2=Id2, p2ref=P2Ref, color2=Color2} = State) ->
+	State#state{p1=P2, id1=Id2, p1ref=P2Ref, color1=Color2, p2=P1, id2=Id1, p2ref=P1Ref, color2=Color1}.
 
 % @doc Returns a game board as a tuple containing Nr row tuples 
 % each with Nc columns (all zeroes).
-board(Nr, Nc) ->
+board(#board_size{rows=Nr, cols=Nc}) ->
 	Row = erlang:make_tuple(Nc, 0),
 	erlang:make_tuple(Nr, 0, [{P,Row} || P <- lists:seq(1,Nr)]).
 
@@ -179,25 +235,25 @@ count(Board, Row, Col, Val, {Dr, Dc}, Acc) ->
 
 board_test_() ->
 	[
-		?_assertEqual({{0,0},{0,0}}, board(2,2)),
-		?_assertEqual({{0,0,0},{0,0,0},{0,0,0}}, board(3,3))
+		?_assertEqual({{0,0},{0,0}}, board(#board_size{rows=2,cols=2})),
+		?_assertEqual({{0,0,0},{0,0,0},{0,0,0}}, board(#board_size{rows=3,cols=3}))
 	].
 
 add_piece_test_() ->
 	[
-		?_assertEqual({ok, {{1,0},{0,0}},1} , add_piece(board(2,2), 1, 1)),
-		?_assertEqual({ok, {{0,1,0},{0,0,0},{0,0,0}},1} , add_piece(board(3,3), 1, 2))
+		?_assertEqual({ok, {{1,0},{0,0}},1} , add_piece(board(#board_size{rows=2,cols=2}), 1, 1)),
+		?_assertEqual({ok, {{0,1,0},{0,0,0},{0,0,0}},1} , add_piece(board(#board_size{rows=3,cols=3}), 1, 2))
 	].
 
 set_piece_test_() ->
 	[
-	 	?_assertEqual({{0,0},{0,2}}, set_piece({{0,0}, {0,0}}, 2, 2, 2)),
-	 	?_assertEqual({{0,0,0},{0,2,0},{0,0,0}}, set_piece({{0,0,0},{0,0,0},{0,0,0}}, 2, 2, 2))
+		?_assertEqual({{0,0},{0,2}}, set_piece({{0,0}, {0,0}}, 2, 2, 2)),
+		?_assertEqual({{0,0,0},{0,2,0},{0,0,0}}, set_piece({{0,0,0},{0,0,0},{0,0,0}}, 2, 2, 2))
 	].
 
 check_win_test_() ->
 	[
-	 	?_assert(check_win({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1))
+		?_assert(check_win({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1))
 	].
 
 count_test_() ->
@@ -217,4 +273,15 @@ free_row_test_() ->
 		?_assertEqual(1, free_row({{0,0},{0,0}}, 2)),
 		?_assertEqual(2, free_row({{1,0},{0,0}}, 1)),
 		?_assertEqual(1, free_row({{1,0},{0,0}}, 2))
+	].
+
+valid_board_size_test_() ->
+	[
+		?_assertEqual(true, valid_board_size(#board_size{rows=6,cols=7})),
+		?_assertEqual(true, valid_board_size(#board_size{rows=7,cols=8})),
+		?_assertEqual(true, valid_board_size(#board_size{rows=7,cols=9})),
+		?_assertEqual(true, valid_board_size(#board_size{rows=7,cols=10})),
+		?_assertEqual(false, valid_board_size(#board_size{rows=5, cols=7})),
+		?_assertEqual(false, valid_board_size(#board_size{rows=6, cols=8})),
+		?_assertEqual(false, valid_board_size(#board_size{rows=1, cols=3}))
 	].
