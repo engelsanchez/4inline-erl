@@ -42,7 +42,7 @@ websocket_init(_Any, Req, []) ->
 % @doc Translates websocket messages from the client into c4_player commands.	
 % Messages: SEEK, CANCEL_SEEK, PLAY, QUIT_GAME.
 websocket_handle({text, Msg}, Req, #state{c4_player=Pid} = State) ->
-	reply(c4_player:text_cmd(Pid, Msg), Req, State).
+	reply(c4_player:text_reply(c4_player:text_cmd(Pid, Msg)), Req, State).
 
 % @doc Handles messages sent from c4_player process and replies to
 % websocket client.

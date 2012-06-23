@@ -20,3 +20,6 @@ clean:
 
 doc:
 	@$(REBAR) doc
+
+tests:
+	@$(REBAR) compile eunit skip_deps=true
