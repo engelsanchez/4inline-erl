@@ -27,7 +27,7 @@ start_link() ->
 	gen_fsm:start_link({local, c4_game_master}, ?MODULE, self(), []).
 
 % @doc Call when a player requests to join a game. 
--spec(seek(#seek{}) -> seek_pending | {new_game, pid(), #game_info{}, turn(), 1|2 }).
+-spec(seek(#seek{}) -> seek_pending | {new_game, #game_info{}, turn(), 1|2 }).
 seek(Seek) ->
 	gen_fsm:sync_send_event(?MODULE, {seek, Seek}).
 
@@ -71,7 +71,9 @@ terminate(_Reason, _Name, _Data) ->
 
 % @doc The main 'loop' state of this FSM handles all messages 
 % (seeks, seek cancellations, player registrations ).
-loop({seek, #seek{pid=Pid, game_type=anon, game_var=Var, board_size=BoardSize} = Seek}, _From, #state{seeks=Seeks, seekers=Seekers, seed=Seed, pseed=PSeed} = State) ->
+loop({seek, #seek{pid=Pid, game_type=anon, game_var=Var, board_size=BoardSize} = SeekIn}, _From, #state{seeks=Seeks, seekers=Seekers, seed=SeedIn, pseed=PSeed} = State) ->
+	{SeekId, Seed} = next_game_id(SeedIn),
+	Seek = SeekIn#seek{id=SeekId},
 	?log("Processing anonymous game seek ~w~n", [Seek]),
 	Key = Seek#seek{pid=none},
 	% Match with currents seeks. Start game if matched, add to seeks if not
@@ -81,13 +83,13 @@ loop({seek, #seek{pid=Pid, game_type=anon, game_var=Var, board_size=BoardSize} =
 			{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var}),
 			{GameId, Seed2} = next_game_id(Seed),
 			{PlayerId, OPlayerId, PSeed2} = next_player_ids(PSeed),
-			c4_player:joined(OPid, #game_info{pid=GamePid, id=GameId, pid1=OPlayerId}, your_turn, 1),
+			c4_player:joined(OPid, #game_info{pid=GamePid, id=GameId, pid1=OPlayerId, board_size=BoardSize, variant=Var}, your_turn, 1),
 			ets:insert(c4_game_tbl, {GameId, GamePid}),
 			Seeks2 = dict:erase(Key, Seeks),
 			Seekers2 = dict:erase(OPid, Seekers),
 			{
 				reply, 
-				{new_game, GamePid, #game_info{id=GameId, pid1=PlayerId}, other_turn, 2}, 
+				{new_game, #game_info{pid=GamePid, id=GameId, pid1=PlayerId, board_size=BoardSize, variant=Var}, other_turn, 2}, 
 				loop, 
 				State#state{seeks=Seeks2, seekers=Seekers2, seed=Seed2, pseed=PSeed2}
 			};

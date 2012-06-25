@@ -13,7 +13,7 @@
 -export([init/1, idle/3, handle_event/3, handle_sync_event/4, handle_info/3, waiting_for_game/3, waiting_for_reconnect/3, my_turn/3, other_turn/3, terminate/3, code_change/4]).
 % Public API exports
 -export([start/0, start_link/0, stop/1, text_cmd/2, text_reply/1, get_state/1,
-       	seek/2, cancel_seek/1, joined/4, play/2, 
+       	seek/2, cancel_seek/1, joined/4, play/3, 
 	played/4, quit_game/1, other_quit/2, other_returned/2, 
 	other_disconnected/1, disconnected/1, game_started/2, seek_issued/2]).
 -include("c4_common.hrl").
@@ -55,16 +55,17 @@ parse_seek(<<"SEEK ", GType:4/binary, " ", GVar:3/binary, " ", BSpec:5/binary>>)
 	end;
 parse_seek(_) -> invalid_command.
 
-% @doc Simple conversion of integer to binary
+% @doc Simple conversion of integer to binary string.
 i2b(I) -> list_to_binary(integer_to_list(I)).
 
-% @doc Parses integer
+% @doc Parses integer from binary string.
 -spec(b2i(binary()) -> integer()).
 b2i(B) -> list_to_integer(binary_to_list(B)).
 
 % @doc Translates turn atom to character (Y|O|W).
 turnc(Turn) -> case Turn of your_turn -> $Y; other_turn -> $O; wait -> $W  end.
 
+% @doc Game variant -> binary string (POP|STD).
 var2txt(Variant) -> case Variant of std -> <<"STD">>;pop -> <<"POP">> end.
 
 % @doc Parses a text command and executes the request action (SEEK, PLAY, etc).
@@ -76,7 +77,7 @@ text_cmd(Pid, <<"CANCEL_SEEK ", SeekId:?ISIZE/binary>>) ->
 	c4_player:cancel_seek(Pid, b2i(SeekId));
 text_cmd(Pid, <<"JOIN_GAME ", GameId:?ISIZE/binary>>) ->
 	c4_player:join_game(Pid, b2i(GameId));
-text_cmd(Pid, <<"PLAY ", GameId:?ISIZE/binary, Col:8/integer>>) ->
+text_cmd(Pid, <<"PLAY ", GameId:?ISIZE/binary, " ", Col:8/integer>>) ->
 	c4_player:play(Pid, b2i(GameId), Col - $0);
 text_cmd(Pid, <<"QUIT_GAME ", GameId:?ISIZE/binary>>) ->
 	c4_player:quit_game(Pid, b2i(GameId));
@@ -89,13 +90,13 @@ text_cmd(_Pid, _) when is_pid(_Pid) ->
 	invalid_command.
 
 % @doc Translates a reply to a text command into text for sending to client.
-text_reply({new_game, #game_info{pid=none, id=GameId, pid1=PlayerId, variant=Var, board_size=#board_size{rows=H,cols=W}}, Turn, Color}) ->
-	<<"NEW_GAME ",  (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
-		(i2b(GameId))/binary, " ", (i2b(PlayerId))/binary, (turnc(Turn)):8/integer, (i2b(Color))/binary>>;
+text_reply({new_game, #game_info{id=GameId, pid1=PlayerId, variant=Var, board_size=#board_size{rows=H,cols=W}}, Turn, Color}) ->
+	<<"NEW_GAME ",  (i2b(GameId))/binary, " ", (i2b(PlayerId))/binary, " ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
+		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary>>;
 text_reply({seek_removed, SeekId}) ->
 	<<"SEEK_REMOVED ", (i2b(SeekId))/binary>>;
 text_reply({seek_issued, #seek{id=SeekId, board_size=#board_size{rows=H,cols=W}, game_var=Var}}) ->
-	<<"SEEK_ISSUED ", (b2i(W))/binary, "x", (b2i(H))/binary, " ", (var2txt(Var))/binary, " ", (i2b(SeekId))/binary>>;
+	<<"SEEK_ISSUED ", (i2b(W))/binary, "x", (i2b(H))/binary, " ", (var2txt(Var))/binary, " ", (i2b(SeekId))/binary>>;
 text_reply({other_played, Col}) when is_integer(Col) ->
 	<<"OTHER_PLAYED ", (Col+$0)/integer>>;
 text_reply({other_won, Col}) when is_integer(Col) ->
@@ -128,14 +129,14 @@ cancel_seek(Pid) ->
 	gen_fsm:sync_send_event(Pid, {cancel_seek}).
 
 % @doc Called when paired with another player for a game
--spec(joined(pid(), #game_info{}, turn(), 1|2) -> {new_game, pos_integer(), turn()}).
+-spec(joined(pid(), #game_info{}, turn(), 1|2) -> {new_game, #game_info{}, turn(), 1|2}).
 joined(Pid, GameInfo, Turn, Color) ->
 	gen_fsm:sync_send_event(Pid, {new_game, GameInfo, Turn, Color}).
 
 % @doc Executes a move for this player
 % Returns : play_ok | you_win | {error, ErrorCode, ErrorMsg}
-play(Pid, Col) ->
-	gen_fsm:sync_send_event(Pid, {play, Col}).
+play(Pid, GameId, Col) ->
+	gen_fsm:sync_send_event(Pid, {play, GameId, Col}).
 
 % @doc Notifies this player of a move by the other player.
 played(Pid, GamePid, Col, Status) ->
@@ -226,17 +227,17 @@ idle({seek, #seek{} = Seek}, _From, State)  ->
 	?log("Player seek : ~w~n", [Seek]),
 	Reply = c4_game_master:seek( Seek#seek{pid=self()}),
 	case Reply of
-		{new_game, GamePid, #game_info{}, Turn, Color} ->
+		{new_game, #game_info{} = GameInfo, Turn, Color} ->
 			?log("New game started right away~n", []),
-			new_game(GamePid, #game_info{}, Turn, Color, State);
+			new_game(GameInfo, Turn, Color, State);
 		seek_pending -> 
 			?log("Player will have to wait for another~n", []),
 			{reply, seek_pending, waiting_for_game, State}
 	end;
-idle({new_game, _GameId} = Event, _From, #state{parent=ParentId} = State) ->
+idle({new_game, #game_info{pid=GamePid}, _Turn, _Color} = Event, _From, #state{parent=ParentId} = State) ->
 	?log("Sending game started notification to user : ~w~n", [Event]),
 	ParentId ! Event,
-	{reply, ok, idle, State};
+	{reply, ok, idle, State#state{game=GamePid}};
 idle({seek_issued, #seek{}} = Event, _From, #state{parent=ParentId} = State) ->
 	?log("Sending seek issued notification to user : ~w~n", [Event]),
 	ParentId ! Event,
@@ -247,10 +248,10 @@ idle(Event, _From, State) ->
 
 % @doc Waiting for game coordinator to join a game
 % or for the user to cancel the request
-waiting_for_game({new_game, #game_info{pid=GamePid} = GameInfo, Turn, Color} = Event, _From, #state{parent=ParentId} = State) ->
+waiting_for_game({new_game, #game_info{} = GameInfo, Turn, Color} = Event, _From, #state{parent=ParentId} = State) ->
 	?log("New game started: ~w~n", [Event]),
-	ParentId ! {new_game, GameInfo, Turn, Color},
-	new_game(GamePid, GameInfo, Turn, Color, State);
+	ParentId ! {new_game, GameInfo#game_info{pid=none}, Turn, Color},
+	new_game(GameInfo, Turn, Color, State);
 waiting_for_game({cancel_seek}, _From, State) ->
 	?log("Player wants to cancel seek request~n", []),
 	case c4_game_master:cancel_seek(self()) of
@@ -263,8 +264,9 @@ waiting_for_game(Event, _From, State) ->
 	{reply, {error, bad_cmd, "Waiting for a game now"}, waiting_for_game, State}.
 
 % @doc Waiting for this player to move state.
-my_turn({play, Col}, {ParentPid, _Tag}, #state{game=GamePid, parent=ParentPid} = State) ->
-	?log("Player played column ~w~n", [Col]),
+% @todo Map input game id to game, ignoring now assuming single game.
+my_turn({play, GameId, Col}, {ParentPid, _Tag}, #state{game=GamePid, parent=ParentPid} = State) ->
+	?log("Player played game ~w column ~w~n", [GameId, Col]),
 	case c4_game:play(GamePid, self(), Col) of
 		invalid_move -> {reply, {error, invalid_move, <<"Invalid Move">>}, my_turn, State};
 		not_your_turn -> {reply, {error, not_your_turn, <<"Wait for your turn to move">>}, my_turn, State};
@@ -297,14 +299,21 @@ waiting_for_reconnect({other_returned, Turn}, _From, #state{parent=PPid} = State
 % Internal functions
 
 % @doc Returns reply when new game started
-new_game(GamePid, #game_info{} = GameInfo, Turn, Color, State) ->
+new_game(#game_info{pid=GamePid} = GameInfo, Turn, Color, State) ->
 	NextState = case Turn of your_turn -> my_turn; other_turn->other_turn;wait->waiting_for_reconnect end,
-	{reply, {new_game, GameInfo, Turn, Color}, NextState, State#state{game=GamePid}}.
+	{reply, {new_game, GameInfo#game_info{pid=none}, Turn, Color}, NextState, State#state{game=GamePid}}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%% Unit tests
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+i2b_test() ->
+	?assertEqual(<<"34">>, i2b(34)),
+	?assertEqual(<<"4">>, i2b(4)),
+	?assertEqual(<<"0">>, i2b(0)),
+	?assertEqual(<<"560">>, i2b(560)),
+	?assertEqual(<<"388534">>, i2b(388534)).
 
 parse_board_size_test() ->
 	?assertEqual(#board_size{cols=7,rows=6}, parse_board_size(<<"07x06">>)),
@@ -320,16 +329,43 @@ player_test() ->
 	{ok, _PMId} = c4_player_master:start(),
 	{ok, P1} = c4_player:start(),
 	{ok, P2} = c4_player:start(),
-	?debugMsg("Issuing first seek~n"),
+	?debugMsg("Issuing first seek"),
 	?assertEqual(seek_pending, c4_player:text_cmd(P1, <<"SEEK ANON STD 07x06">>)),
-	?assertEqual([#seek{game_var=std, game_type=anon, board_size=#board_size{cols=7,rows=6}}], c4_game_master:seek_list()),
-	?debugMsg("Issuing second seek~n"),
+	receive
+		{seek_issued, #seek{id=SeekId}} = Msg1 -> 
+			?debugFmt("Received ~w", [Msg1]),
+			?assertEqual(<<"SEEK_ISSUED 7x6 STD ", (i2b(SeekId))/binary>>, c4_player:text_reply(Msg1))
+	after
+		1000 -> SeekId = none, ?assert(no_seek_issued)
+	end,
+	?assertEqual([#seek{game_var=std, id=SeekId, game_type=anon, board_size=#board_size{cols=7,rows=6}}], c4_game_master:seek_list()),
+	?debugMsg("Issuing second seek"),
 	R1 = c4_player:text_cmd(P2, <<"SEEK ANON STD 07x06">>), 
 	?assertMatch({new_game, #game_info{} , other_turn, 2}, R1),
-	?debugMsg("We finished. Shutting player processes~n"),
+	?debugFmt("R1 = ~w", [R1]),
+	{_, #game_info{id=GameId}, _, _} = R1,
+	GIdStr = list_to_binary(io_lib:format("~6..0B", [GameId])),
+	?debugFmt("Using Game Id ~s", [GIdStr]),
+	receive
+		{new_game, #game_info{}, your_turn, 1} = Msg -> 
+			?debugFmt("Received ~w", [Msg]),
+			?assertMatch(<<"NEW_GAME ", _G:?ISIZE/binary, " ", _P:?ISIZE/binary, " STD 7x6 Y 1">>, c4_player:text_reply(Msg))
+	after
+		1000 -> ?assert(false)
+	end,
+	?assertEqual(play_ok, c4_player:play(P1, GameId, 1)), 
+	?assertEqual(play_ok, c4_player:play(P2, GameId, 2)), 
+	?assertEqual(play_ok, c4_player:play(P1, GameId, 1)), 
+	?assertEqual(play_ok, c4_player:play(P2, GameId, 2)), 
+	?assertEqual(play_ok, c4_player:play(P1, GameId, 1)), 
+	?assertEqual(play_ok, c4_player:play(P2, GameId, 2)), 
+	?debugMsg("And now in text"),
+	?assertEqual(you_win, c4_player:text_cmd(P1, <<"PLAY ", GIdStr/binary," 1">>)), 
+	?debugMsg("First player won. Ship it!"),
+	?debugMsg("We finished. Shutting player processes"),
 	c4_player:stop(P1),
 	c4_player:stop(P2),
-	?debugMsg("Shutting master processes~n"),
+	?debugMsg("Shutting master processes"),
 	c4_game_master:stop(),
 	c4_player_master:stop().
 -endif.

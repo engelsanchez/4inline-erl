@@ -58,4 +58,5 @@ stop(_State) ->
 init(_Args) ->
 	SupSpec = {one_for_one, 1, 1},
 	GameMasterSpec = {c4_game_master, {c4_game_master, start_link, []}, permanent, 2000, worker, [c4_game_master]},
-	{ok, {SupSpec, [GameMasterSpec]}}.	
+	PlayerMasterSpec = {c4_player_master, {c4_player_master, start_link, []}, permanent, 2000, worker, [c4_player_master]},
+	{ok, {SupSpec, [GameMasterSpec, PlayerMasterSpec]}}.	
