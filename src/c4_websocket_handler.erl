@@ -7,7 +7,7 @@
 -export([init/3, handle/2, terminate/2]).
 -export([websocket_init/3, websocket_handle/3,
         websocket_info/3, websocket_terminate/3]).
--record(state, {c4_player :: pid()}).
+-record(state, {c4_player=none :: none|pid()}).
 -include("c4_common.hrl").
 
 % @doc Callback that handles new HTTP request by 
@@ -34,15 +34,27 @@ terminate(_Req, _State) ->
 -spec(websocket_init(term(), term(), term()) -> {ok, term(), #state{}} ).
 websocket_init(_Any, Req, []) ->
         Req2 = cowboy_http_req:compact(Req),
-	?log("Starting~n", []),
-	% Create c4_player process
-	{ok, Pid} = c4_player:start_link(),
-        {ok, Req2, #state{c4_player=Pid}}.
+	?log("Starting", []),
+        {ok, Req2, #state{c4_player=none}}.
 
 % @doc Translates websocket messages from the client into c4_player commands.	
 % Messages: SEEK, CANCEL_SEEK, PLAY, QUIT_GAME.
-websocket_handle({text, Msg}, Req, #state{c4_player=Pid} = State) ->
-	?log("Received : ~s~n", [Msg]),
+websocket_handle({text, <<"CONNECT">>}, Req, #state{c4_player=none} = State) ->
+	case c4_player_master:connect() of
+		{ok, Pid, <<PlayerId:36/binary>>} when is_pid(Pid) ->
+			reply(<<"WELCOME ", PlayerId/binary>>, Req, State#state{c4_player=Pid});
+		_ -> 
+			reply(<<"INTERNAL_ERROR">>, Req, State)
+	end;
+websocket_handle({text, <<"CONNECT AS ", PlayerId:36/binary>>}, Req, #state{c4_player=none} = State) ->
+	case c4_player_master:connect(PlayerId) of
+		{ok, Pid, <<NewPlayerId:36/binary>>} when is_pid(Pid) -> 
+			reply(<<"WELCOME ", NewPlayerId>>, Req, State#state{c4_player=Pid});
+		_ -> 
+			reply(<<"INTERNAL_ERROR">>, Req, State)
+	end;
+websocket_handle({text, Msg}, Req, #state{c4_player=Pid} = State) when is_pid(Pid) ->
+	?log("Received : ~s", [Msg]),
 	reply(c4_player:text_reply(c4_player:text_cmd(Pid, Msg)), Req, State).
 
 % @doc Handles messages sent from c4_player process and replies to
@@ -53,7 +65,7 @@ websocket_info(Event, Req, State) ->
 % @doc Convenience function to log a reply and return it
 % in the format that the websocket handlers need to return.
 reply(Msg, Req, State) ->
-	?log("Sending message ~s~n", [Msg]),
+	?log("Sending message ~s", [Msg]),
 	{reply, {text, Msg}, Req, State}.
 
 % @doc It terminates the child c4_player process when the websocket is closed.

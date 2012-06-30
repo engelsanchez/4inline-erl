@@ -21,5 +21,5 @@ clean:
 doc:
 	@$(REBAR) doc
 
-tests:
+tests: app
 	@$(REBAR) compile eunit skip_deps=true
