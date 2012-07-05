@@ -56,7 +56,7 @@ init(#game_info{ppid1=P1, ppid2=P2, board_size=BoardSize, variant=GameVar}) when
 	?log("Starting~n", []),
 	monitor(process, P1),
 	monitor(process, P2),
-	{ok, #state{p1=P1, p1conn=true, color1=first, p2=P2, p2conn=true, color2=second, board=c4_board:new(BoardSize), game_var=GameVar}}.
+	{ok, #state{p1=P1, p1conn=true, color1=1, p2=P2, p2conn=true, color2=2, board=c4_board:new(BoardSize), game_var=GameVar}}.
 
 % @doc Waiting for a move
 % returns: 

@@ -104,6 +104,8 @@ text_reply({new_game, #game_info{id=GameId, variant=Var, board_size=#board_size{
 		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary, " NEW">>;
 text_reply({seek_removed, SeekId}) ->
 	<<"SEEK_REMOVED ", (i2b(SeekId))/binary>>;
+text_reply({duplicate_seek, SeekId}) ->
+	<<"DUPLICATE_SEEK ", (i2b(SeekId))/binary>>;
 text_reply({seek_issued, #seek{id=SeekId, board_size=#board_size{rows=H,cols=W}, variant=Var}}) ->
 	<<"SEEK_ISSUED ", (i2b(SeekId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary>>;
 text_reply({seek_pending, #seek{id=SeekId,variant=Var,board_size=#board_size{rows=H,cols=W}}}) ->
@@ -189,7 +191,7 @@ quit(Pid) ->
 % @doc Should be called when the other player just quit the game.
 -spec(other_quit(pid(), pid()) -> ok | no_game).
 other_quit(Pid, GamePid) ->
-	gen_fsm:sync_send_event(Pid, {other_quit, GamePid}, ?INTERNAL_TIMEOUT).
+	gen_fsm:sync_send_all_state_event(Pid, {other_quit, GamePid}, ?INTERNAL_TIMEOUT).
 
 % @doc Called when the player has been disconnected
 -spec(disconnected(pid()) -> ok).
@@ -438,9 +440,12 @@ do_seek(#seek{variant=Var,board_size=BoardSize} = Seek, State) ->
 		{new_game, #game_info{} = GameInfo, Turn, Color} ->
 			?log("New game started right away", []),
 			new_game(GameInfo, Turn, Color, State);
-		{seek_pending, SeekId}  -> 
+		{seek_pending, SeekId} -> 
 			?log("Player will have to wait for another", []),
-			{reply, {seek_pending, #seek{id=SeekId, variant=Var, board_size=BoardSize}}, idle, State}
+			{reply, {seek_pending, #seek{id=SeekId, variant=Var, board_size=BoardSize}}, idle, State};
+		{duplicate_seek, SeekId} ->
+			?log("Silly player issuing the same seek again ~w", [Seek]),
+			{reply, {duplicate_seek, SeekId}, idle, State}
 	end.
 
 
@@ -497,6 +502,8 @@ expect_game(GameInfo, Turn, Color) ->
 	end.
 	
 player_test() ->
+	error_logger:logfile({open, "c4_server.log"}),
+	error_logger:tty(false),
 	?debugMsg("Starting Game Master"),
 	{ok, _GMId} = c4_game_master:start(),
 	?debugMsg("Starting Player Master"),
@@ -528,9 +535,9 @@ player_test() ->
 	{_, #game_info{id=GameId} = Game1Info, _, _} = R1,
 	expect_game(Game1Info, your_turn, 1),
 	?debugMsg("Will play the game now"),
-	do_text_moves(GameId, P1, P2, ["DROP 1", "DROP 2", "DROP 1", "DROP 2", "DROP 1", "DROP 2"]),
+	do_moves(GameId, P1, P2, [{drop,1},{drop,2},{drop,1},{drop,2},{drop,1},{drop,2}]),
 	?debugMsg("And now, the winning move"),
-	do_text_move(GameId, P1, {you_win, GameId}, "DROP 1"), 
+	do_move(GameId, P1, {you_win, GameId, {drop,1}}, {drop,1}), 
 	?debugMsg("First player won. Checking current seek list and reception of current seeks upon game end by both players"),
 	?assertEqual([#seek{pid=P3, variant=std, id=SeekId2, type=anon, board_size=#board_size{cols=8,rows=7}}],
 		c4_game_master:seek_list()),
@@ -542,9 +549,9 @@ player_test() ->
 	{_, #game_info{id=Game2Id} = Game2Info, _, _} = R2,
 	expect_game(Game2Info, your_turn, 1),
 	?debugMsg("Will play game #2 now"),
-	do_text_moves(Game2Id, P3, P1, ["DROP 5", "DROP 5", "DROP 6", "DROP 6", "DROP 7", "DROP 7"]),
+	do_moves(Game2Id, P3, P1, [{drop,5},{drop,5},{drop,6},{drop,6},{drop,7},{drop,7}]),
 	?debugMsg("And now, the winning move"),
-	do_text_move(Game2Id, P3, {you_win, Game2Id}, "DROP 8"), 
+	do_move(Game2Id, P3, {you_win, Game2Id, {drop, 8}}, {drop, 8}), 
 	?debugMsg("Player 3 won. Checking current seek list and reception of current seeks upon game end by both players"),
 	?assertEqual([], c4_game_master:seek_list()),
 	?debugMsg("Shutting player processes"),
@@ -555,17 +562,15 @@ player_test() ->
 	?debugMsg("Shutting player master process"),
 	c4_player_master:stop().
 
-do_text_move(GameId, P, Result, Move) ->
-	GIdStr = i2b(GameId, ?ISIZE),
-	BinMove = list_to_binary(Move),
-	?assertEqual(Result, c4_player:text_cmd(P, <<"PLAY ", GIdStr/binary, " ", BinMove/binary>>)),
+do_move(GameId, P, Result, Move) ->
+	?assertEqual(Result, c4_player:play(P, GameId, Move)),
 	ok.
 
 % @doc Helper to perform a bunch of moves in one go.
-do_text_moves(_GameId, _P1, _P2, []) ->
+do_moves(_GameId, _P1, _P2, []) ->
 	ok;
-do_text_moves(GameId, P1, P2, [Move | MoreMoves]) ->
-	do_text_move(GameId, P1, {play_ok, GameId}, Move),
-	do_text_moves(GameId, P2, P1, MoreMoves).
+do_moves(GameId, P1, P2, [Move | MoreMoves]) ->
+	do_move(GameId, P1, {play_ok, GameId, Move}, Move),
+	do_moves(GameId, P2, P1, MoreMoves).
 
 %-endif.

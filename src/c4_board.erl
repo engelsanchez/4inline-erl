@@ -92,12 +92,13 @@ check_win(Board, Row, Col, Val, {Dr, Dc}) ->
 count(Board, Row, Col, Val, {Dr, Dc}) ->
 	count(Board, Row, Col, Val, {Dr, Dc}, 0).
 
-count(Board, Row, Col, _Val, {_Dr, _Dc}, Acc) 
+count(Board, Row, Col, Val, {_Dr, _Dc}, Acc) 
 	when
 		Row > tuple_size(Board); 
 		Row < 1; 
 		Col > tuple_size(element(1, Board));
-		Col < 1
+		Col < 1;
+		?piece(Board, Row, Col) /= Val
 	-> Acc;
 count(Board, Row, Col, Val, {Dr, Dc}, Acc) -> 
 	count(Board, Row+Dr, Col+Dc, Val, {Dr, Dc}, 
@@ -146,7 +147,9 @@ check_win_test_() ->
 		?_assertEqual(true, check_win({{1,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1)),
 		?_assertEqual(true, check_win({{1,0,1,1},{1,0,0,0},{1,0,0,0},{1,0,0,0}}, 2, 1)),
 		?_assertEqual(false, check_win({{1,1,1,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 1)),
-		?_assertEqual(false, check_win({{1,1,1,0},{1,1,0,0},{1,0,1,0},{0,0,0,0}}, 1, 1))
+		?_assertEqual(false, check_win({{2,1,1,1},{0,0,0,0},{0,0,0,0},{0,0,0,0}}, 1, 4)),
+		?_assertEqual(false, check_win({{1,1,1,0},{1,1,0,0},{1,0,1,0},{0,0,0,0}}, 1, 1)),
+		?_assertEqual(false, check_win({{2,1,1,2,2,2,0},{1,1,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0},{0,0,0,0,0,0,0}}, 1, 6))
 	].
 
 count_test_() ->

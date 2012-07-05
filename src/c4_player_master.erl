@@ -53,6 +53,8 @@ player_quit(Pid) ->
 
 % @doc Sends a seek removed notification to all players 
 % registered to listen to then.
+notify_seek_removed([], _P1, _P2) ->
+	ok;
 notify_seek_removed(SeekId, P1, P2) ->
 	gen_server:call(?MODULE, {notify_seek_removed, SeekId, P1, P2}, ?INTERNAL_TIMEOUT).
 
@@ -172,7 +174,7 @@ send_seek_issued(#seek{pid=SPid} = Seek) ->
 % @doc Asynchronously sends a seek removal message to all registered players
 % except for the one issuing the seek.
 send_seek_removed(SeekId, P1, P2) ->
-	?log("Sending seek removed message to everyone but ~w and ~w", [P1, P2]),
+	?log("Sending seek ~w removed message to everyone but ~w and ~w", [SeekId, P1, P2]),
 	ets:foldl(
 		fun({Pid}, []) -> 
 			case Pid of 
