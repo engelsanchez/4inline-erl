@@ -3,3 +3,4 @@
 *.swp
 .eunit
 deps
+c4_server.log

@@ -4,8 +4,7 @@
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 % Public API
--export([start/0, start_link/0, stop/0, connect/0, connect/1, register_player/1, unregister_player/1, notify_seek_removed/1, notify_seek_issued/1]).
--define(NOLOG,true).
+-export([start/0, start_link/0, stop/0, connect/0, connect/1, register_player/1, unregister_player/1, notify_seek_removed/3, notify_seek_issued/1]).
 -include("c4_common.hrl").
 -record(state, {parent}).
 
@@ -26,35 +25,35 @@ start_link() ->
 % @doc Stops the player master process
 -spec(stop() -> ok).
 stop() ->
-	gen_server:call(?MODULE, stop).
+	gen_server:call(?MODULE, stop, ?INTERNAL_TIMEOUT).
 
 % @doc Creates a new player process 
 -spec(connect(binary()) -> {ok, pid(), binary()}).
 connect(<<PlayerId:36/binary>>) ->
-	gen_server:call(?MODULE, {connect, PlayerId}).
+	gen_server:call(?MODULE, {connect, PlayerId}, ?INTERNAL_TIMEOUT).
 
 % @doc Creates a new player process 
 -spec(connect() -> {ok, pid(), binary()}).
 connect() ->
-	gen_server:call(?MODULE, connect).
+	gen_server:call(?MODULE, connect, ?INTERNAL_TIMEOUT).
 
 % @doc Registers a player so they can receive seek notifications
 register_player(Pid) ->
-	gen_server:call(?MODULE, {register_player, Pid}).
+	gen_server:call(?MODULE, {register_player, Pid}, ?INTERNAL_TIMEOUT).
 	  
 % @doc Registers a player so they can receive seek notifications
 unregister_player(Pid) ->
-	gen_server:call(?MODULE, {unregister_player, Pid}).
+	gen_server:call(?MODULE, {unregister_player, Pid}, ?INTERNAL_TIMEOUT).
 	  
 % @doc Sends a seek removed notification to all players 
 % registered to listen to then.
-notify_seek_removed(SeekId) ->
-	gen_server:call(?MODULE, {notify_seek_removed, SeekId}).
+notify_seek_removed(SeekId, P1, P2) ->
+	gen_server:call(?MODULE, {notify_seek_removed, SeekId, P1, P2}, ?INTERNAL_TIMEOUT).
 
 % @doc Sends a seek issued notification to all players 
 % registered to listen to then.
 notify_seek_issued(#seek{} = Seek) ->
-	gen_server:call(?MODULE, {notify_seek_issued, Seek}).
+	gen_server:call(?MODULE, {notify_seek_issued, Seek}, ?INTERNAL_TIMEOUT).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % gen_server callbacks
@@ -82,7 +81,7 @@ new_player({ParentPid, _Tag} = From, State) ->
 	{ok, Pid} = c4_player:start_link(ParentPid),
 	do_register_player(Pid),
 	?log("Started new player ~w", [Pid]),
-	PlayerId = uuid:uuid_to_string(uuid:get_v4()),
+	PlayerId = list_to_binary(uuid:uuid_to_string(uuid:get_v4())),
 	ets:insert(c4_player_id_tbl, {PlayerId, Pid}),
 	ets:insert(c4_player_pid_tbl, {Pid, PlayerId}),
 	gen_server:reply(From, {ok, Pid, PlayerId}),
@@ -104,32 +103,40 @@ do_register_player(Pid) ->
 % @doc 
 % gen_server synchronous request callback.
 handle_call(connect, From, State) ->
+	?log("Processing CONNECT", []),
 	new_player(From, State);
 handle_call({connect, PlayerId}, From, State) ->
+	?log("Processing CONNECT AS ~s", [PlayerId]),
 	% Look up player id and process associated to it.
 	case ets:lookup(c4_player_id_tbl, PlayerId) of 
-		[] -> new_player(From, State);
-		[{_PlayerId, Pid}] -> {reply, {ok, Pid, PlayerId}, State}
+		[] -> 
+			?log("Player not found, creating new (~s)", [PlayerId]),
+			new_player(From, State);
+		[{_PlayerId, Pid}] -> 
+			?log("Player reconnected as ~s", [PlayerId]),
+			{reply, {ok, Pid, PlayerId}, State}
 	end;
 handle_call({register_player, Pid}, _From, State) ->
 	do_register_player(Pid),
 	{reply, ok, State};
 handle_call({unregister_player, Pid}, _From, State) ->
+	?log("Removing player ~w from notification list", [Pid]),
 	ets:delete(c4_player_notify_tbl, Pid),
 	{reply, ok, State};
 handle_call({notify_seek_issued, Seek}, _From, State) ->
 	send_seek_issued(Seek),
 	{reply, ok, State};
-handle_call({notify_seek_removed, SeekId, PlayerPid}, _From, State) ->
-	send_seek_removed(SeekId, PlayerPid),
+handle_call({notify_seek_removed, SeekId, P1, P2}, _From, State) ->
+	send_seek_removed(SeekId, P1, P2),
 	{reply, ok, State};
 handle_call(stop, _From, State) ->
+	?log("Received STOP message", []),
 	{stop, normal, ok, State}.
 
 % @doc Handles player notification requests.
 % Asynchronous request callback.
-handle_cast({notify_seek_removed, SeekId, PlayerPid}, State) ->
-	send_seek_removed(SeekId, PlayerPid),
+handle_cast({notify_seek_removed, SeekId, P1, P2}, State) ->
+	send_seek_removed(SeekId, P1, P2),
 	{noreply, State}; 
 handle_cast({notify_seek_issued, Seek}, State) ->
 	send_seek_issued(Seek),
@@ -138,6 +145,7 @@ handle_cast({notify_seek_issued, Seek}, State) ->
 % @doc Asynchronously sends a seek issued message to all registered players
 % except for the one issuing the seek.
 send_seek_issued(#seek{pid=SPid} = Seek) ->
+	?log("Sending seek issued msg to everyone but ~w", [SPid]),
 	ets:foldl(
 		fun({Pid}, []) -> 
 			case Pid of 
@@ -153,11 +161,13 @@ send_seek_issued(#seek{pid=SPid} = Seek) ->
 
 % @doc Asynchronously sends a seek removal message to all registered players
 % except for the one issuing the seek.
-send_seek_removed(SeekId, PlayerPid) ->
+send_seek_removed(SeekId, P1, P2) ->
+	?log("Sending seek removed message to everyone but ~w and ~w", [P1, P2]),
 	ets:foldl(
 		fun({Pid}, []) -> 
 			case Pid of 
-				PlayerPid -> ok; 
+				P1 -> ok; 
+				P2 -> ok; 
 				_ -> c4_player:seek_removed(Pid, SeekId)
 			end,
 			[] 

@@ -30,21 +30,21 @@ start_link(GameInfo) ->
 % @doc Called when a player makes a move
 -spec(play(pid(), pid(), tuple()) -> invalid_move | not_your_turn | ok | you_win ).
 play(GamePid, PlayerPid, {drop, Col}) ->
-	gen_server:call(GamePid, {play, PlayerPid, {drop, Col}}).
+	gen_server:call(GamePid, {play, PlayerPid, {drop, Col}}, ?INTERNAL_TIMEOUT).
 
 % @doc Called when a player has been disconnected (may come back).
 -spec(disconnect(pid(), pid()) -> ok).
 disconnect(GamePid, PlayerPid) ->
-	gen_server:call(GamePid, {disconnected, PlayerPid}).
+	gen_server:call(GamePid, {disconnected, PlayerPid}, ?INTERNAL_TIMEOUT).
 
 % @doc Stops the game
 abandon(GamePid) ->
-	gen_server:call(GamePid, {abandon}).
+	gen_server:call(GamePid, {abandon}, ?INTERNAL_TIMEOUT).
 
 % @doc Called when a player actively quits a game (not just disconnects).
 -spec(quit(pid(), pid()) -> ok).
 quit(GamePid, PlayerPid) ->
-	gen_server:call(GamePid, {quit, PlayerPid}).
+	gen_server:call(GamePid, {quit, PlayerPid}, ?INTERNAL_TIMEOUT).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% FSM functions

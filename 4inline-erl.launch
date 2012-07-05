@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<launchConfiguration type="org.erlide.core.launch.erlangProcess">
+<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_PATHS">
+<listEntry value="/4inline-erl"/>
+</listAttribute>
+<listAttribute key="org.eclipse.debug.core.MAPPED_RESOURCE_TYPES">
+<listEntry value="4"/>
+</listAttribute>
+<listAttribute key="org.eclipse.debug.ui.favoriteGroups">
+<listEntry value="org.eclipse.debug.ui.launchGroup.debug"/>
+<listEntry value="org.eclipse.debug.ui.launchGroup.run"/>
+</listAttribute>
+<stringAttribute key="org.erlide.core.arguments" value=""/>
+<booleanAttribute key="org.erlide.core.console" value="true"/>
+<stringAttribute key="org.erlide.core.cookie" value="erlide"/>
+<intAttribute key="org.erlide.core.debugFlags" value="4"/>
+<stringAttribute key="org.erlide.core.extra_args" value=""/>
+<stringAttribute key="org.erlide.core.function" value="start"/>
+<booleanAttribute key="org.erlide.core.has_backend" value="false"/>
+<listAttribute key="org.erlide.core.interpretModules">
+<listEntry value="4inline-erl:cowboy.erl"/>
+<listEntry value="4inline-erl:cowboy_acceptor.erl"/>
+<listEntry value="4inline-erl:cowboy_acceptors_sup.erl"/>
+<listEntry value="4inline-erl:cowboy_app.erl"/>
+<listEntry value="4inline-erl:cowboy_bstr.erl"/>
+<listEntry value="4inline-erl:cowboy_client.erl"/>
+<listEntry value="4inline-erl:cowboy_clock.erl"/>
+<listEntry value="4inline-erl:cowboy_cookies.erl"/>
+<listEntry value="4inline-erl:cowboy_dispatcher.erl"/>
+<listEntry value="4inline-erl:cowboy_http.erl"/>
+<listEntry value="4inline-erl:cowboy_http_handler.erl"/>
+<listEntry value="4inline-erl:cowboy_http_protocol.erl"/>
+<listEntry value="4inline-erl:cowboy_http_req.erl"/>
+<listEntry value="4inline-erl:cowboy_http_rest.erl"/>
+<listEntry value="4inline-erl:cowboy_http_static.erl"/>
+<listEntry value="4inline-erl:cowboy_http_websocket.erl"/>
+<listEntry value="4inline-erl:cowboy_http_websocket_handler.erl"/>
+<listEntry value="4inline-erl:cowboy_listener.erl"/>
+<listEntry value="4inline-erl:cowboy_listener_sup.erl"/>
+<listEntry value="4inline-erl:cowboy_multipart.erl"/>
+<listEntry value="4inline-erl:cowboy_protocol.erl"/>
+<listEntry value="4inline-erl:cowboy_requests_sup.erl"/>
+<listEntry value="4inline-erl:cowboy_ssl_transport.erl"/>
+<listEntry value="4inline-erl:cowboy_sup.erl"/>
+<listEntry value="4inline-erl:cowboy_tcp_transport.erl"/>
+<listEntry value="4inline-erl:uuid.erl"/>
+<listEntry value="4inline-erl:c4_board.erl"/>
+<listEntry value="4inline-erl:c4_game.erl"/>
+<listEntry value="4inline-erl:c4_game_master.erl"/>
+<listEntry value="4inline-erl:c4_player.erl"/>
+<listEntry value="4inline-erl:c4_player_master.erl"/>
+<listEntry value="4inline-erl:c4_server.erl"/>
+<listEntry value="4inline-erl:c4_websocket_handler.erl"/>
+<listEntry value="4inline-erl:autobahn_SUITE.erl"/>
+<listEntry value="4inline-erl:chunked_handler.erl"/>
+<listEntry value="4inline-erl:dispatcher_prop.erl"/>
+<listEntry value="4inline-erl:http_SUITE.erl"/>
+<listEntry value="4inline-erl:http_handler.erl"/>
+<listEntry value="4inline-erl:http_handler_echo_body.erl"/>
+<listEntry value="4inline-erl:http_handler_errors.erl"/>
+<listEntry value="4inline-erl:http_handler_init_shutdown.erl"/>
+<listEntry value="4inline-erl:http_handler_long_polling.erl"/>
+<listEntry value="4inline-erl:http_handler_loop_timeout.erl"/>
+<listEntry value="4inline-erl:http_handler_multipart.erl"/>
+<listEntry value="4inline-erl:http_handler_set_resp.erl"/>
+<listEntry value="4inline-erl:http_handler_stream_body.erl"/>
+<listEntry value="4inline-erl:proper_SUITE.erl"/>
+<listEntry value="4inline-erl:rest_forbidden_resource.erl"/>
+<listEntry value="4inline-erl:rest_nodelete_resource.erl"/>
+<listEntry value="4inline-erl:rest_resource_etags.erl"/>
+<listEntry value="4inline-erl:rest_simple_resource.erl"/>
+<listEntry value="4inline-erl:websocket_echo_handler.erl"/>
+<listEntry value="4inline-erl:websocket_handler.erl"/>
+<listEntry value="4inline-erl:websocket_handler_init_shutdown.erl"/>
+<listEntry value="4inline-erl:ws_SUITE.erl"/>
+<listEntry value="4inline-erl:ws_timeout_hibernate_handler.erl"/>
+</listAttribute>
+<booleanAttribute key="org.erlide.core.loadAllNodes" value="false"/>
+<booleanAttribute key="org.erlide.core.longName" value="true"/>
+<stringAttribute key="org.erlide.core.module" value="c4_server"/>
+<stringAttribute key="org.erlide.core.nodeName" value="4inline-erl"/>
+<stringAttribute key="org.erlide.core.projects" value="4inline-erl"/>
+<stringAttribute key="org.erlide.core.runtime" value="erlang"/>
+<booleanAttribute key="org.erlide.core.startMe" value="true"/>
+<stringAttribute key="org.erlide.core.working_dir" value="/Users/engel/Dev/4inline-erl/"/>
+</launchConfiguration>

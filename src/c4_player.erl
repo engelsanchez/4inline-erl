@@ -10,22 +10,24 @@
 -module(c4_player).
 -behaviour(gen_fsm).
 % FSM callback exports
--export([init/1, idle/3, handle_event/3, handle_sync_event/4, handle_info/3, waiting_for_game/3, waiting_for_reconnect/3, my_turn/3, other_turn/3, terminate/3, code_change/4]).
+-export([init/1, idle/3, handle_event/3, handle_sync_event/4, handle_info/3, waiting_for_reconnect/3, my_turn/3, other_turn/3, terminate/3, code_change/4]).
 % Public API exports
--export([start/1, start_link/1, stop/1, text_cmd/2, text_reply/1, get_state/1,
-	seek/2, cancel_seek/1, accept_seek/2, joined/4, play/3, 
+-export([start/1, start_link/1, text_cmd/2, text_reply/1, get_state/1,
+	seek/2, cancel_seek/1, cancel_seek/2, accept_seek/2, joined/4, play/3, 
 	other_played/4, quit_game/2, other_quit/2, other_returned/2, 
-	other_disconnected/1, disconnected/1, game_started/2, seek_issued/2]).
--define(NOLOG, true).
+	other_disconnected/1, disconnected/1, game_started/2, 
+	seek_issued/2, seek_removed/2, quit/1]).
 -include("c4_common.hrl").
 -record(state, {
 		game_pid = none  :: none | pid(), 
 		game_id = none	:: none | pos_integer(), 
-		parent = none :: none | pid()
+		parent = none :: none | pid(),
+		tref = none :: none | reference()
 		}).
 
 % Width of integer fields in input text binaries.
 -define(ISIZE, 6).
+-define(DISCONNECT_TIMEOUT, 5000).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
@@ -37,10 +39,6 @@ start(Args) ->
 % @doc Starts c4_player process supervised by and linked to current process
 start_link(Args) ->
 	gen_fsm:start_link(?MODULE, Args, []).
-
-% @doc Stops the player process
-stop(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, stop).
 
 % @doc Reads board dimensions from text (07x06,08x07,etc).
 parse_board_size(<<W1:8/integer, W2:8/integer, "x", H1:8/integer, H2:8/integer>>) 
@@ -89,6 +87,8 @@ text_cmd(Pid, <<"PLAY ", GameId:?ISIZE/binary, " DROP ", Col:8/integer>>) ->
 	c4_player:play(Pid, b2i(GameId), {drop, Col - $0});
 text_cmd(Pid, <<"QUIT_GAME ", GameId:?ISIZE/binary>>) ->
 	c4_player:quit_game(Pid, b2i(GameId));
+text_cmd(Pid, <<"QUIT">>) ->
+	c4_player:quit(Pid);
 text_cmd(Pid, <<"SEEK ", _Rest/binary>> = Cmd) ->
 	case parse_seek(Cmd) of
 		invalid_command -> invalid_command;
@@ -99,12 +99,14 @@ text_cmd(_Pid, _) when is_pid(_Pid) ->
 
 % @doc Translates a reply to a text command into text for sending to client.
 text_reply({new_game, #game_info{id=GameId, variant=Var, board_size=#board_size{rows=H,cols=W}}, Turn, Color}) ->
-	<<"NEW_GAME ",	(i2b(GameId))/binary, " ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
-		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary>>;
+	<<"GAME ", (i2b(GameId))/binary, " ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
+		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary, " NEW">>;
 text_reply({seek_removed, SeekId}) ->
 	<<"SEEK_REMOVED ", (i2b(SeekId))/binary>>;
 text_reply({seek_issued, #seek{id=SeekId, board_size=#board_size{rows=H,cols=W}, variant=Var}}) ->
-	<<"SEEK_ISSUED ", (i2b(W))/binary, "x", (i2b(H))/binary, " ", (var2txt(Var))/binary, " ", (i2b(SeekId))/binary>>;
+	<<"SEEK_ISSUED ", (i2b(SeekId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary>>;
+text_reply({seek_pending, #seek{id=SeekId,variant=Var,board_size=#board_size{rows=H,cols=W}}}) ->
+	<<"SEEK_PENDING ", (i2b(SeekId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary>>;
 text_reply({other_played, {drop, Col}}) when is_integer(Col) ->
 	<<"OTHER_PLAYED DROP ", (Col+$0)/integer>>;
 text_reply({other_won, {drop, Col}}) when is_integer(Col) ->
@@ -117,12 +119,18 @@ text_reply({play_ok, GameId}) when is_integer(GameId) ->
 	<<"PLAY_OK ", (i2b(GameId))/binary>>;
 text_reply({invalid_move, GameId}) when is_integer(GameId) ->
 	<<"INVALID_MOVE ", (i2b(GameId))/binary>>;
+text_reply({leaving_game, GameId}) when is_integer(GameId) ->
+	<<"LEAVING_GAME ", (i2b(GameId))/binary>>;
+text_reply({seek_canceled, SeekId}) ->
+	<<"SEEK_CANCELED ", (i2b(SeekId))/binary>>;
+text_reply({no_seek_found, SeekId}) ->
+	<<"NO_SEEK_FOUND ", (i2b(SeekId))/binary>>;
 text_reply(Reply) ->
 	case Reply of
 		other_disconnected -> <<"OTHER_DISCONNECTED" >>;
-		seek_pending -> <<"SEEK_PENDING">>;
 		seek_canceled -> <<"SEEK_CANCELED">>;
-		no_seek_pending -> <<"NO_SEEK_PENDING">>;
+		no_seek_found -> <<"NO_SEEK_FOUND">>;
+		ok_quit -> <<"OK_QUIT">>;
 		invalid_command -> <<"INVALID_COMMAND">>;
 		{error, _Code, ErrMsg} -> <<"ERROR ", ErrMsg/binary>>;
 		_ -> ?log("Unexpected reply ~w", [Reply]), <<"INTERNAL_ERROR">>
@@ -132,56 +140,67 @@ text_reply(Reply) ->
 % @doc Player requests to join a game.
 % Returns :  join_ack | {new_game, Turn} | {error, Error, ErrorMsg}.
 seek(Pid, #seek{} = Seek) ->
-	gen_fsm:sync_send_event(Pid, {seek, Seek}).
+	gen_fsm:sync_send_event(Pid, {seek, Seek}, ?INTERNAL_TIMEOUT).
 
 % @doc Impatient player requests to forget about joining a game.
 -spec(cancel_seek(pid()) -> seek_canceled | no_seek_pending).
 cancel_seek(Pid) ->
-	gen_fsm:sync_send_event(Pid, {cancel_seek}).
+	gen_fsm:sync_send_event(Pid, {cancel_seek}, ?INTERNAL_TIMEOUT).
+
+% @doc Impatient player requests to forget about joining a game.
+-spec(cancel_seek(pid(), seek_id()) -> {seek_canceled, seek_id()} | {no_seek_pending, seek_id()}).
+cancel_seek(Pid, SeekId) ->
+	gen_fsm:sync_send_event(Pid, {cancel_seek, SeekId}, ?INTERNAL_TIMEOUT).
 
 % @doc Player request to accept a pending seek.
 accept_seek(Pid, SeekId) ->
-	gen_fsm:sync_send_event(Pid, {accept_seek, SeekId}).
+	gen_fsm:sync_send_event(Pid, {accept_seek, SeekId}, ?INTERNAL_TIMEOUT).
 
 % @doc Called when paired with another player for a game
 -spec(joined(pid(), #game_info{}, turn(), 1|2) -> {new_game, #game_info{}, turn(), 1|2}).
 joined(Pid, GameInfo, Turn, Color) ->
-	gen_fsm:sync_send_event(Pid, {new_game, GameInfo, Turn, Color}).
+	gen_fsm:sync_send_event(Pid, {new_game, GameInfo, Turn, Color}, ?INTERNAL_TIMEOUT).
 
 % @doc Executes a move for this player
 % Returns : play_ok | you_win | {error, ErrorCode, ErrorMsg}
 play(Pid, GameId, Move) ->
-	gen_fsm:sync_send_event(Pid, {play, GameId, Move}).
+	gen_fsm:sync_send_event(Pid, {play, GameId, Move}, ?INTERNAL_TIMEOUT).
 
 % @doc Notifies this player of a move by the other player.
 other_played(Pid, GamePid, Move, Status) ->
-	gen_fsm:sync_send_event(Pid, {other_played, GamePid, Move, Status}).
+	gen_fsm:sync_send_event(Pid, {other_played, GamePid, Move, Status}, ?INTERNAL_TIMEOUT).
 
 % @doc Called by our player to leave a game.
+-spec(quit_game(pid(), game_id()) -> {no_game, game_id()} | {leaving_game, game_id()}).
 quit_game(Pid, GameId) ->
-	gen_fsm:sync_send_all_state_event(Pid, {quit_game, GameId}).
+	gen_fsm:sync_send_all_state_event(Pid, {quit_game, GameId}, ?INTERNAL_TIMEOUT).
+
+% @doc Called by our player to leave a game.
+-spec(quit(pid) -> ok_quit).
+quit(Pid) ->
+	gen_fsm:sync_send_all_state_event(Pid, quit, ?INTERNAL_TIMEOUT).
 
 % @doc Should be called when the other player just quit the game.
 other_quit(Pid, GamePid) ->
-	gen_fsm:sync_send_event(Pid, {other_quit, GamePid}).
+	gen_fsm:sync_send_event(Pid, {other_quit, GamePid}, ?INTERNAL_TIMEOUT).
 
 % @doc Called when the player has been disconnected
 -spec(disconnected(pid()) -> ok).
 disconnected(Pid) when is_pid(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, disconnected).
+	gen_fsm:sync_send_all_state_event(Pid, disconnected, ?INTERNAL_TIMEOUT).
 
 % @doc Alerts our parent that the other player in a game has disconnected.
 -spec(other_disconnected(pid()) -> ok).
 other_disconnected(Pid) when is_pid(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, other_disconnected).
+	gen_fsm:sync_send_all_state_event(Pid, other_disconnected, ?INTERNAL_TIMEOUT).
 
 % @doc Alerts our handler that the other player in a game has reconnected.
 other_returned(Pid, Turn) when is_pid(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, {other_returned, Turn}).
+	gen_fsm:sync_send_all_state_event(Pid, {other_returned, Turn}, ?INTERNAL_TIMEOUT).
 
 % @doc Sends a notification to the player that a game started.
 game_started(Pid, GameId) ->
-	gen_fsm:sync_send_all_state_event(Pid, {game_started, GameId}).
+	gen_fsm:sync_send_all_state_event(Pid, {game_started, GameId}, ?INTERNAL_TIMEOUT).
 
 % @doc Asynchronously sends a notification to the player that a seek has been issued,
 % no matter what state we are in. The client should ignore them if not expecting
@@ -190,11 +209,16 @@ game_started(Pid, GameId) ->
 seek_issued(Pid, #seek{} = Seek) ->
 	gen_fsm:send_all_state_event(Pid, {seek_issued, Seek}).
 
+% @doc Sends asynchronous notification of a seek removal to caller process.
+-spec(seek_removed(pid(), pos_integer()) -> ok).
+seek_removed(Pid, SeekId) ->
+	gen_fsm:send_all_state_event(Pid, {seek_removed, SeekId}).
+
 % @doc Returns the state information of the player process as a tuple
-% {StateName, StateData}
+% {StateName, Data}
 -spec(get_state(pid()) -> {string(), #state{}}).
 get_state(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, get_state).
+	gen_fsm:sync_send_all_state_event(Pid, get_state, ?INTERNAL_TIMEOUT).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% FSM functions
@@ -205,32 +229,38 @@ init(ParentPid) ->
 	monitor(process, ParentPid),
 	{ok, idle, #state{parent=ParentPid}}.
 
-% @doc Handles seek notifications
+% @doc Handles seek notifications which are asynchronous to minimize blocking when
+% doing them in bulk.
 % Generic FSM callback for asynchronous events.
 handle_event({seek_issued, #seek{} = Seek}, State, #state{parent=ParentPid} = Data) ->
 	do_seek_issued(Seek, ParentPid),
 	{next_state, State, Data};
-handle_event(Event, StateName, StateData) ->
-	?log("Unexpected event in state ~w : ~w ~w", [StateName, Event, StateData]),
-	{ok, StateName, StateData}.
+handle_event({seek_removed, SeekId}, State, #state{parent=ParentPid} = Data) ->
+	do_seek_removed(SeekId, ParentPid),
+	{next_state, State, Data};
+handle_event(Event, StateName, Data) ->
+	?log("Unexpected event in state ~w : ~w ~w", [StateName, Event, Data]),
+	{ok, StateName, Data}.
 
 % @doc Handles player disconnect, game quit and get state requests.
 % Generic callback for synchronous events for all states.
 handle_sync_event(disconnected, _From, State, Data) ->
 	NewData = do_disconnected(Data),
 	{reply, ok, State, NewData};
-handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = StateData) when is_pid(GamePid) ->
+handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) ->
 	c4_game:quit(GamePid, self()), 
-	{reply, ok_quit, idle, StateData#state{game_pid=none}};
-handle_sync_event({quit_game, GameId}, _From, _StateName, StateData) ->
-	{reply, {no_game, GameId}, idle, StateData#state{game_pid=none}};
-handle_sync_event(stop, _From, _StateName, State) ->
-	{stop, normal, ok, State};
+	{reply, {leaving_game, GameId}, idle, Data#state{game_pid=none}};
+handle_sync_event({quit_game, GameId}, _From, _StateName, Data) ->
+	{reply, {no_game, GameId}, idle, Data};
+handle_sync_event(quit, _From, _StateName, #state{game_pid=GamePid} = Data) ->
+	if is_pid(GamePid) -> c4_game:quit(GamePid, self()); true -> ok end,
+	c4_game_master:cancel_seek(self()),
+	{stop, normal, ok_quit, Data};
 handle_sync_event(get_state, _From, StateName, State) ->
 	{reply, {StateName, State}, StateName, State};
-handle_sync_event(Event, _From, StateName, StateData) ->
+handle_sync_event(Event, _From, StateName, Data) ->
 	?log("Unexpected event in state ~w : ~w", [StateName, Event]),
-	{reply, invalid_command, StateName, StateData}.
+	{reply, invalid_command, StateName, Data}.
 
 % @doc Handles death of our caller process (user disconnection). 
 % FSM miscellaneous event handling callback.
@@ -239,30 +269,23 @@ handle_info({'DOWN', _Ref, process, Pid, _Reason}, State, #state{parent=Pid} = D
 	{next_state, State, NewData};
 handle_info({'DOWN', _Ref, process, _Pid, _Reason}, State, Data) ->
 	{next_state, State, Data};
-handle_info(Msg, StateName, StateData) ->
-	?log("Unexpected event ~w in state ~w : ~w", [Msg, StateName, StateData]),
-	{next_state, StateName, StateData}.
+handle_info({timeout, TRef, player_disconnect}, _State, #state{tref=TRef} = Data) ->
+	{stop, normal, Data#state{tref=none}};
+handle_info(Msg, StateName, Data) ->
+	?log("Unexpected event ~w in state ~w : ~w", [Msg, StateName, Data]),
+	{next_state, StateName, Data}.
 
 % @doc Code hot swapping callback (does nothing now).
-code_change(_OldVsn, StateName, StateData, _Extra) ->
-	{ok, StateName, StateData}.
+code_change(_OldVsn, StateName, Data, _Extra) ->
+	{ok, StateName, Data}.
 
 % @doc No real cleanup when player process dies.
 terminate(_Reason, _StateName, _State) ->
 	ok.
 
-% @doc Limbo state when no game is going on and user has not requested to join a game
-idle({seek, #seek{} = Seek}, _From, State)  ->
-	?log("Player seek : ~w", [Seek]),
-	Reply = c4_game_master:seek(Seek#seek{pid=self()}),
-	case Reply of
-		{new_game, #game_info{} = GameInfo, Turn, Color} ->
-			?log("New game started right away", []),
-			new_game(GameInfo, Turn, Color, State);
-		seek_pending -> 
-			?log("Player will have to wait for another", []),
-			{reply, seek_pending, waiting_for_game, State}
-	end;
+% @doc Non-game state.
+idle({seek, Seek}, _From, State)  ->
+	do_seek(Seek, State);
 idle({accept_seek, SeekId}, _From, State)  ->
 	?log("Player wants to accept seek : ~w", [SeekId]),
 	Reply = c4_game_master:accept_seek(SeekId),
@@ -272,37 +295,26 @@ idle({accept_seek, SeekId}, _From, State)  ->
 			new_game(GameInfo, Turn, Color, State);
 		seek_not_found -> 
 			?log("Bad seek id or already taken", []),
-			{reply, {seek_not_found, SeekId}, waiting_for_game, State}
+			{reply, {seek_not_found, SeekId}, idle, State}
 	end;
-idle({new_game, #game_info{pid=GamePid}, _Turn, _Color} = Event, _From, #state{parent=ParentId} = State) ->
-	?log("Sending game started notification to user : ~w", [Event]),
-	case ParentId of
-		none -> ok;
-		_ -> ParentId ! Event
-	end,
-	{reply, ok, idle, State#state{game_pid=GamePid}};
-idle(Event, _From, State) ->
-	?log("Unexpected message while idle : ~w", [Event]),
-	{reply, {error, bad_cmd, "Join a game first"}, idle, State}.
-% @doc Waiting for game coordinator to join a game
-% or for the user to cancel the request
-waiting_for_game({new_game, #game_info{} = GameInfo, Turn, Color} = Event, _From, #state{parent=ParentId} = State) ->
+idle({cancel_seek}, _From, State) ->
+	?log("Player wants to cancel all seek requests", []),
+	Reply = c4_game_master:cancel_seek(self()),
+	{reply, Reply, idle, State};
+idle({cancel_seek, SeekId}, _From, State) when is_integer(SeekId) ->
+	?log("Player wants to cancel seek ~w", [SeekId]),
+	Reply = c4_game_master:cancel_seek(self(), SeekId),
+	{reply, {Reply, SeekId}, idle, State};
+idle({new_game, #game_info{} = GameInfo, Turn, Color} = Event, _From, #state{parent=ParentId} = State) ->
 	?log("New game started: ~w", [Event]),
 	case ParentId of
 		none -> ok;
 		_ -> ParentId ! {new_game, GameInfo#game_info{pid=none}, Turn, Color}
 	end,
 	new_game(GameInfo, Turn, Color, State);
-waiting_for_game({cancel_seek}, _From, State) ->
-	?log("Player wants to cancel seek request", []),
-	case c4_game_master:cancel_seek(self()) of
-		join_canceled -> {reply, join_canceled, idle, State};
-		% Game started, should receive game started message soon
-		no_join_pending -> {reply, no_join_pending, waiting_for_game, State}
-	end;
-waiting_for_game(Event, _From, State) ->
-	?log("Unexpected message while waiting for game : ~w", [Event]),
-	{reply, {error, bad_cmd, "Waiting for a game now"}, waiting_for_game, State}.
+idle(Event, _From, State) ->
+	?log("Unexpected message while idle : ~w", [Event]),
+	{reply, {error, bad_cmd, "Join a game first"}, idle, State}.
 
 % @doc Waiting for this player to move state.
 % @todo Map input game id to game, ignoring now assuming single game.
@@ -314,7 +326,9 @@ my_turn({play, GameId, Move}, {ParentPid, _Tag} = From, #state{game_pid=GamePid,
 		ok -> {reply, {play_ok, GameId}, other_turn, State};
 		you_win ->
 			gen_fsm:reply(From, {you_win, GameId}),
-			do_seek_issued(c4_game_master:seek_list(), ParentPid),
+			% @todo When multiple games are allowed, we will only notify when all games are finished.
+			SeekList = c4_game_master:register_for_seeks(self()),
+			do_seek_issued(SeekList, ParentPid),
 			{next_state, idle, State#state{game_pid=none}}
 	end;
 my_turn(Event, _From, State) ->
@@ -329,7 +343,9 @@ other_turn({other_played, GamePid, Move, your_turn}, _From, #state{game_pid=Game
 other_turn({other_played, GamePid, Move, you_lose}, _From, #state{game_pid=GamePid, parent=PPid} = State) ->
 	?log("Other player played column ~w and wins", [Move]),
 	PPid ! {other_won, Move},
-	do_seek_issued(c4_game_master:seek_list(), PPid),
+	% @todo When multiple games are allowed, we will only notify when all games are finished.
+	SeekList = c4_game_master:register_for_seeks(self()),
+	do_seek_issued(SeekList, PPid),
 	{reply, ok, idle, State#state{game_pid=none}};
 other_turn(Event, _From, State) ->
 	?log("Unexpected message while waiting for other player to move ~w", [Event]),
@@ -355,7 +371,8 @@ do_disconnected(#state{game_pid=GamePid} = Data) ->
 		none -> ok;
 		_ -> c4_game:disconnect(GamePid, self())
 	end,
-	Data#state{parent=none}.
+	TRef = erlang:start_timer(?DISCONNECT_TIMEOUT, self(), player_disconnected),
+	Data#state{parent=none, tref=TRef}.
 
 % @doc Forwards seek issued message(s) to controlling process (if any).
 do_seek_issued(_Seek, none) ->
@@ -371,6 +388,27 @@ do_seek_issued([#seek{} = Seek | L], ParentPid) ->
 	do_seek_issued(Seek, ParentPid),
 	do_seek_issued(L, ParentPid).
 
+% @doc Sends our calling process a seek removed message.
+do_seek_removed([SeekId | MoreSeeks], ParentId) ->
+	do_seek_removed(SeekId, ParentId),
+	do_seek_removed(MoreSeeks, ParentId);
+do_seek_removed([], _ParentId) ->
+	ok;
+do_seek_removed(SeekId, ParentPid) ->
+	?log("Notifying ~w of removed seek ~w", [ParentPid, SeekId]),
+	ParentPid ! {seek_removed, SeekId}.
+
+do_seek(#seek{variant=Var,board_size=BoardSize} = Seek, State) ->
+	?log("Player seek : ~w", [Seek]),
+	Reply = c4_game_master:seek(Seek#seek{pid=self()}),
+	case Reply of
+		{new_game, #game_info{} = GameInfo, Turn, Color} ->
+			?log("New game started right away", []),
+			new_game(GameInfo, Turn, Color, State);
+		{seek_pending, SeekId}  -> 
+			?log("Player will have to wait for another", []),
+			{reply, {seek_pending, #seek{id=SeekId, variant=Var, board_size=BoardSize}}, idle, State}
+	end.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -425,7 +463,6 @@ expect_game(GameInfo, Turn, Color) ->
 		1000 -> ?assert(no_new_game_msg)
 	end.
 	
-
 player_test() ->
 	?debugMsg("Starting Game Master"),
 	{ok, _GMId} = c4_game_master:start(),
@@ -436,21 +473,25 @@ player_test() ->
 	?debugMsg("Starting Player 2"),
 	{ok, P2, _P2Str} = c4_player_master:connect(),
 	?debugMsg("Issuing first seek"),
-	?assertEqual(seek_pending, c4_player:text_cmd(P1, <<"SEEK ANON C4 STD 07x06">>)),
-	SeekId1 = expect_seek(#seek{board_size=#board_size{cols=7,rows=6}, variant=std, type=anon}), 
+	S1 = c4_player:text_cmd(P1, <<"SEEK ANON C4 STD 07x06">>),
+	?assertMatch({seek_pending, #seek{variant=std,type=anon,board_size=#board_size{cols=7,rows=6}}}, S1),
+	{seek_pending, #seek{id=SeekId1} = Seek1} = S1,
+	expect_seek(Seek1), 
 	?debugMsg("Player 3 will start, should receive previous seek upon connecting"),
 	{ok, P3, _P3Str} = c4_player_master:connect(),
 	expect_seek(#seek{id=SeekId1, board_size=#board_size{cols=7,rows=6}, variant=std, type=anon}),
 	?debugMsg("Player 3 will issue seek and wait"),
-	?assertEqual(seek_pending, c4_player:text_cmd(P3, <<"SEEK ANON C4 STD 08x07">>)),
-	_SeekId2 = expect_seek(#seek{board_size=#board_size{cols=8,rows=7}, variant=std, type=anon}), 
+	S2 = c4_player:text_cmd(P3, <<"SEEK ANON C4 STD 08x07">>),
+	?assertMatch({seek_pending, #seek{variant=std,type=anon,board_size=#board_size{cols=8,rows=7}}}, S2),
+	{seek_pending, #seek{id=SeekId2} = Seek2} = S2,
+	expect_seek(Seek2),
 	?debugMsg("Checking current seek list"),
 	?assertEqual(lists:sort([#seek{pid=P1, variant=std, id=SeekId1, type=anon, board_size=#board_size{cols=7,rows=6}},
-			#seek{pid=P3, variant=std, id=SeekId1, type=anon, board_size=#board_size{cols=8,rows=7}}]),
+			#seek{pid=P3, variant=std, id=SeekId2, type=anon, board_size=#board_size{cols=8,rows=7}}]),
 		lists:sort(c4_game_master:seek_list())),
 	?debugMsg("Issuing second seek, should match first and start game"),
 	R1 = c4_player:text_cmd(P2, <<"SEEK ANON C4 STD 07x06">>), 
-	?assertMatch({new_game, #game_info{variant=std, type=anon, board_size=#board_size{cols=7,rows=6}} , other_turn, 2}, R1),
+	?assertMatch({new_game, #game_info{id=SeekId1, variant=std, type=anon, board_size=#board_size{cols=7,rows=6}} , other_turn, 2}, R1),
 	{_, #game_info{id=GameId} = Game1Info, _, _} = R1,
 	expect_game(Game1Info, your_turn, 1),
 	?debugMsg("Will play the game now"),
@@ -458,13 +499,13 @@ player_test() ->
 	?debugMsg("And now, the winning move"),
 	do_text_move(GameId, P1, {you_win, GameId}, "DROP 1"), 
 	?debugMsg("First player won. Checking current seek list and reception of current seeks upon game end by both players"),
-	?assertEqual([#seek{pid=P3, variant=std, id=SeekId1, type=anon, board_size=#board_size{cols=8,rows=7}}],
+	?assertEqual([#seek{pid=P3, variant=std, id=SeekId2, type=anon, board_size=#board_size{cols=8,rows=7}}],
 		c4_game_master:seek_list()),
-	expect_seek(#seek{pid=P3, variant=std, id=SeekId1, type=anon, board_size=#board_size{cols=8,rows=7}}),
-	expect_seek(#seek{pid=P3, variant=std, id=SeekId1, type=anon, board_size=#board_size{cols=8,rows=7}}),
+	expect_seek(#seek{pid=P3, variant=std, id=SeekId2, type=anon, board_size=#board_size{cols=8,rows=7}}),
+	expect_seek(#seek{pid=P3, variant=std, id=SeekId2, type=anon, board_size=#board_size{cols=8,rows=7}}),
 	?debugMsg("Now player 1 will accept player 3's seek and play"),
-	R2 = c4_player:text_cmd(P1, <<"ACCEPT_SEEK ",(i2b(SeekId1,?ISIZE))/binary>>),
-	?assertMatch({new_game, #game_info{variant=std, type=anon, board_size=#board_size{cols=8,rows=7}} , other_turn, 2}, R2),
+	R2 = c4_player:text_cmd(P1, <<"ACCEPT_SEEK ",(i2b(SeekId2,?ISIZE))/binary>>),
+	?assertMatch({new_game, #game_info{id=SeekId2, variant=std, type=anon, board_size=#board_size{cols=8,rows=7}} , other_turn, 2}, R2),
 	{_, #game_info{id=Game2Id} = Game2Info, _, _} = R2,
 	expect_game(Game2Info, your_turn, 1),
 	?debugMsg("Will play game #2 now"),
@@ -474,8 +515,8 @@ player_test() ->
 	?debugMsg("Player 3 won. Checking current seek list and reception of current seeks upon game end by both players"),
 	?assertEqual([], c4_game_master:seek_list()),
 	?debugMsg("Shutting player processes"),
-	c4_player:stop(P1),
-	c4_player:stop(P2),
+	c4_player:quit(P1),
+	c4_player:quit(P2),
 	?debugMsg("Shutting game master process"),
 	c4_game_master:stop(),
 	?debugMsg("Shutting player master process"),

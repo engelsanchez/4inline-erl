@@ -6,16 +6,19 @@
 -export([start/0, start/2, stop/1]).
 -export([init/1]).
 -export([start_link/0]).
-
+-include("c4_common.hrl").
 
 % @doc Manual application start.
 -spec(start() -> {ok, pid()} | {ok, pid(), term()}).
 start() ->
-        application:start(crypto),
-        application:start(public_key),
-        application:start(ssl),
-        application:start(cowboy),
-        application:start(c4_server).
+	error_logger:logfile({open, "c4_server.log"}),
+	?log("Starting application ~w", [?MODULE]),
+    application:start(crypto),
+    application:start(public_key),
+    application:start(ssl),
+    application:start(cowboy),
+	application:start(uuid),
+    application:start(c4_server).
 
 % @doc Starts our game server and the cowboy listeners.
 % This is the initialization callback called from application:start
@@ -28,6 +31,7 @@ start(_Type, _Args) ->
                         {'_', default_handler, []}
                 ]}
         ],
+	?log("Starting cowboy listener on port 8080", []),
         cowboy:start_listener(my_http_listener, 100,
                 cowboy_tcp_transport, [{port, 8080}],
                 cowboy_http_protocol, [{dispatch, Dispatch}]

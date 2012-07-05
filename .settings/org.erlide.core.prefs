@@ -1,8 +1,8 @@
-#Mon Sep 26 21:51:25 EDT 2011
 backend_version=R14B
 eclipse.preferences.version=1
 external_includes=
 external_modules=
-include_dirs=include
+include_dirs=deps/uuid/include;deps/cowboy/include;include;src
+nukeOutputOnClean=false
 output_dir=ebin
-source_dirs=src
+source_dirs=deps/cowboy/src;deps/uuid/src;src
