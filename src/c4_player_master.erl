@@ -4,7 +4,9 @@
 % gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 % Public API
--export([start/0, start_link/0, stop/0, connect/0, connect/1, register_player/1, unregister_player/1, notify_seek_removed/3, notify_seek_issued/1]).
+-export([start/0, start_link/0, stop/0, connect/0, connect/1, register_player/1, 
+		 unregister_player/1, notify_seek_removed/3, notify_seek_issued/1,
+		 player_quit/1]).
 -include("c4_common.hrl").
 -record(state, {parent}).
 
@@ -44,7 +46,11 @@ register_player(Pid) ->
 % @doc Registers a player so they can receive seek notifications
 unregister_player(Pid) ->
 	gen_server:call(?MODULE, {unregister_player, Pid}, ?INTERNAL_TIMEOUT).
-	  
+
+-spec(player_quit(pid()) -> ok | no_player).
+player_quit(Pid) ->
+	gen_server:call(?MODULE, {player_quit, Pid}, ?INTERNAL_TIMEOUT).
+
 % @doc Sends a seek removed notification to all players 
 % registered to listen to then.
 notify_seek_removed(SeekId, P1, P2) ->
@@ -79,6 +85,7 @@ terminate(_Reason, _State) ->
 % unique ID.
 new_player({ParentPid, _Tag} = From, State) ->
 	{ok, Pid} = c4_player:start_link(ParentPid),
+	monitor(process, Pid),
 	do_register_player(Pid),
 	?log("Started new player ~w", [Pid]),
 	PlayerId = list_to_binary(uuid:uuid_to_string(uuid:get_v4())),
@@ -105,7 +112,7 @@ do_register_player(Pid) ->
 handle_call(connect, From, State) ->
 	?log("Processing CONNECT", []),
 	new_player(From, State);
-handle_call({connect, PlayerId}, From, State) ->
+handle_call({connect, PlayerId}, {CallerId, _Tag} = From, State) ->
 	?log("Processing CONNECT AS ~s", [PlayerId]),
 	% Look up player id and process associated to it.
 	case ets:lookup(c4_player_id_tbl, PlayerId) of 
@@ -114,6 +121,7 @@ handle_call({connect, PlayerId}, From, State) ->
 			new_player(From, State);
 		[{_PlayerId, Pid}] -> 
 			?log("Player reconnected as ~s", [PlayerId]),
+			c4_player:reconnected(Pid, CallerId),
 			{reply, {ok, Pid, PlayerId}, State}
 	end;
 handle_call({register_player, Pid}, _From, State) ->
@@ -123,6 +131,8 @@ handle_call({unregister_player, Pid}, _From, State) ->
 	?log("Removing player ~w from notification list", [Pid]),
 	ets:delete(c4_player_notify_tbl, Pid),
 	{reply, ok, State};
+handle_call({player_quit, Pid}, _From, State) ->
+	{reply, do_player_quit(Pid), State};
 handle_call({notify_seek_issued, Seek}, _From, State) ->
 	send_seek_issued(Seek),
 	{reply, ok, State};
@@ -189,6 +199,9 @@ handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
 			ets:delete(c4_player_id_tbl, PlayerId),
 			{noreply, State}
 	end;
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, State) ->
+	do_player_quit(Pid),
+	{noreply, State};
 handle_info(Event,  State) ->
 	unexpected(Event, State).
 
@@ -198,3 +211,14 @@ unexpected(Event, State) ->
 
 code_change(_OldVsn, State, _Extra) ->
 	{ok, State}.
+
+do_player_quit(Pid) ->
+	case ets:lookup(c4_player_pid_tbl, Pid) of
+		[{Pid, PlayerId}] ->
+			ets:delete(c4_player_notify_tbl, Pid),
+			ets:delete(c4_player_pid_tbl, Pid),
+			ets:delete(c4_player_id_tbl, PlayerId),
+			ok;
+		[] -> no_player
+	end.
+

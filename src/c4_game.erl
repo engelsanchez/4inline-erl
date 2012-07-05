@@ -78,8 +78,14 @@ handle_call({play, P1, {drop, Col}}, _From, #state{p1=P1, p1conn=true, color1=Co
 					c4_player:other_played(P2, self(), {drop, Col}, you_lose), 
 					{stop, normal, you_win, State#state{board=NewBoard}};
 				false -> 
-					c4_player:other_played(P2, self(), {drop, Col}, your_turn),
-					{reply, ok, turn_change(State#state{board=NewBoard})}
+					case c4_board:is_full(NewBoard) of
+						false ->
+							c4_player:other_played(P2, self(), {drop, Col}, your_turn),
+							{reply, ok, turn_change(State#state{board=NewBoard})};
+						true ->
+							c4_player:other_played(P2, self(), {drop, Col}, no_moves),
+							{stop, normal, no_moves, turn_change(State#state{board=NewBoard})}
+					end
 			end;
 		invalid_move -> 
 			{reply, invalid_move, State}
@@ -113,7 +119,13 @@ handle_call({disconnected, P1}, _From, #state{p1=P1, p1conn=true, p2=P2} = State
 	{reply, ok, State#state{p1conn=false}};
 handle_call({disconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State) ->
 	c4_player:other_disconnected(P1),
-	{reply, ok, State#state{p1conn=false}};
+	{reply, ok, State#state{p2conn=false}};
+handle_call({reconnected, P1}, _From, #state{p1=P1, p1conn=false, p2=P2} = State) ->
+	c4_player:other_returned(P2),
+	{reply, ok, State#state{p1conn=true}};
+handle_call({reconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State) ->
+	c4_player:other_returned(P1),
+	{reply, ok, State#state{p2conn=true}};
 handle_call({abandon}, _From, State) ->
 	{stop, normal, ok, State};
 handle_call(Msg, _From, State) ->
@@ -127,9 +139,9 @@ handle_cast(Msg, State) ->
 % @doc Handles player process disconnections. 
 % FSM callback for non-FSM process messages.
 handle_info({'DOWN', _Ref, process, Pid, _Reason}, #state{p1=Pid} = Data) ->
-	{noreply, Data#state{p1conn=false}};
+	{stop, normal, Data#state{p1conn=false}};
 handle_info({'DOWN', _Ref, process, Pid, _Reason}, #state{p2=Pid} = Data) ->
-	{noreply, Data#state{p2conn=false}};
+	{stop, normal, Data#state{p2conn=false}};
 handle_info(Event, Data) ->
 	?log("Unexpected event ~w : ~w", [Event, Data]),
 	{next_state, Data}.
