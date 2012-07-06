@@ -84,8 +84,8 @@ text_cmd(Pid, <<"CANCEL_SEEK ", SeekId:?ISIZE/binary>>) ->
 	c4_player:cancel_seek(Pid, b2i(SeekId));
 text_cmd(Pid, <<"JOIN_GAME ", GameId:?ISIZE/binary>>) ->
 	c4_player:join_game(Pid, b2i(GameId));
-text_cmd(Pid, <<"PLAY ", GameId:?ISIZE/binary, " DROP ", Col:8/integer>>) ->
-	c4_player:play(Pid, b2i(GameId), {drop, Col - $0});
+text_cmd(Pid, <<"PLAY ", GameId:?ISIZE/binary, " DROP ", Col/binary>>) ->
+	c4_player:play(Pid, b2i(GameId), {drop, b2i(Col)});
 text_cmd(Pid, <<"QUIT_GAME ", GameId:?ISIZE/binary>>) ->
 	c4_player:quit_game(Pid, b2i(GameId));
 text_cmd(Pid, <<"QUIT">>) ->
@@ -111,19 +111,19 @@ text_reply({seek_issued, #seek{id=SeekId, board_size=#board_size{rows=H,cols=W},
 text_reply({seek_pending, #seek{id=SeekId,variant=Var,board_size=#board_size{rows=H,cols=W}}}) ->
 	<<"SEEK_PENDING ", (i2b(SeekId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary>>;
 text_reply({other_played, GameId, {drop, Col}}) when is_integer(GameId), is_integer(Col) ->
-	<<"OTHER_PLAYED ", (i2b(GameId))/binary, " DROP ", (Col+$0)/integer>>;
+	<<"OTHER_PLAYED ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({other_played_no_moves, GameId, {drop, Col}}) when is_integer(GameId), is_integer(Col) ->
-	<<"OTHER_NO_MOVES ", (i2b(GameId))/binary, "DROP ", (Col+$0)/integer>>;
+	<<"OTHER_NO_MOVES ", (i2b(GameId))/binary, "DROP ", (i2b(Col))/binary>>;
 text_reply({other_won, GameId, {drop, Col}}) when is_integer(Col) ->
-	<<"OTHER_WON ", (i2b(GameId))/binary, " DROP ", (Col+$0)/integer>>;
+	<<"OTHER_WON ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({other_disconnected, GameId}) ->
 	<<"OTHER_DISCONNECTED ", (i2b(GameId))/binary>>;
 text_reply({other_returned, Turn}) ->
 	<<"OTHER_RETURNED ", (turnc(Turn)):8/integer>>;
 text_reply({you_win, GameId, {drop, Col}}) when is_integer(GameId) ->
-	<<"YOU_WIN ", (i2b(GameId))/binary, " DROP ", (Col+$0)/integer>>;
+	<<"YOU_WIN ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({play_ok, GameId, {drop, Col}}) when is_integer(GameId) ->
-	<<"PLAY_OK ", (i2b(GameId))/binary, " DROP ", (Col+$0)/integer>>;
+	<<"PLAY_OK ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({invalid_move, GameId}) when is_integer(GameId) ->
 	<<"INVALID_MOVE ", (i2b(GameId))/binary>>;
 text_reply({leaving_game, GameId}) when is_integer(GameId) ->
@@ -292,7 +292,7 @@ handle_info({'DOWN', _Ref, process, Pid, _Reason}, State, #state{parent=Pid} = D
 	{next_state, State, NewData};
 handle_info({'DOWN', _Ref, process, _Pid, _Reason}, State, Data) ->
 	{next_state, State, Data};
-handle_info({timeout, TRef, player_disconnect}, _State, #state{tref=TRef} = Data) ->
+handle_info({timeout, TRef, player_disconnected}, _State, #state{tref=TRef} = Data) ->
 	{stop, normal, Data#state{tref=none}};
 handle_info(Msg, StateName, Data) ->
 	?log("Unexpected event ~w in state ~w : ~w", [Msg, StateName, Data]),

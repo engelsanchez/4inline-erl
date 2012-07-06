@@ -60,7 +60,7 @@ stop(_State) ->
 % of the main c4_server process that will be automatically restarted if it crashes. 
 % Callback called by supervisor:start_link/3.
 init(_Args) ->
-	SupSpec = {one_for_one, 1, 1},
+	SupSpec = {one_for_all, 1, 5},
 	GameMasterSpec = {c4_game_master, {c4_game_master, start_link, []}, permanent, 2000, worker, [c4_game_master]},
 	PlayerMasterSpec = {c4_player_master, {c4_player_master, start_link, []}, permanent, 2000, worker, [c4_player_master]},
 	{ok, {SupSpec, [GameMasterSpec, PlayerMasterSpec]}}.	
