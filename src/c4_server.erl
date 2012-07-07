@@ -12,6 +12,7 @@
 -spec(start() -> {ok, pid()} | {ok, pid(), term()}).
 start() ->
 	error_logger:logfile({open, "c4_server.log"}),
+	error_logger:tty(false),
 	?log("Starting application ~w", [?MODULE]),
     application:start(crypto),
     application:start(public_key),
