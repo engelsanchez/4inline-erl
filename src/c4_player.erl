@@ -27,9 +27,9 @@
 		prev_state = idle :: atom()
 		}).
 
-% Width of integer fields in input text binaries.
--define(ISIZE, 6).
--define(DISCONNECT_TIMEOUT, 5000).
+
+-define(ISIZE, 6). % Width of zero padded integers in input text messages.
+-define(DISCONNECT_TIMEOUT, 60000). % Time to wait for player to reconnect
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
@@ -103,6 +103,12 @@ text_cmd(_Pid, _) when is_pid(_Pid) ->
 text_reply({new_game, #game_info{id=GameId, variant=Var, board_size=#board_size{rows=H,cols=W}}, Turn, Color}) ->
 	<<"GAME ", (i2b(GameId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
 		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary, " NEW">>;
+text_reply({game, #game_state{id=GameId, variant=Var, 
+							  board_size=#board_size{rows=H,cols=W}, 
+							  board=Board, turn=Turn, color=Color}}) ->
+	<<"GAME ", (i2b(GameId))/binary, " C4 ", (var2txt(Var))/binary, " ", (i2b(W))/binary, "x", (i2b(H))/binary, " ",
+		(turnc(Turn)):8/integer, " ", (i2b(Color))/binary, " BOARD ",
+	  (list_to_binary(io_lib:format("~w", [Board])))/binary >>;
 text_reply({seek_removed, SeekId}) ->
 	<<"SEEK_REMOVED ", (i2b(SeekId))/binary>>;
 text_reply({duplicate_seek, SeekId}) ->
@@ -119,8 +125,8 @@ text_reply({other_won, GameId, {drop, Col}}) when is_integer(Col) ->
 	<<"OTHER_WON ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({other_disconnected, GameId}) ->
 	<<"OTHER_DISCONNECTED ", (i2b(GameId))/binary>>;
-text_reply({other_returned, Turn}) ->
-	<<"OTHER_RETURNED ", (turnc(Turn)):8/integer>>;
+text_reply({other_returned, GameId}) ->
+	<<"OTHER_RETURNED ", (i2b(GameId))/binary>>;
 text_reply({you_win, GameId, {drop, Col}}) when is_integer(GameId) ->
 	<<"YOU_WIN ", (i2b(GameId))/binary, " DROP ", (i2b(Col))/binary>>;
 text_reply({play_ok, GameId, {drop, Col}}) when is_integer(GameId) ->
@@ -139,6 +145,7 @@ text_reply({no_seek_found, SeekId}) ->
 	<<"NO_SEEK_FOUND ", (i2b(SeekId))/binary>>;
 text_reply(Reply) ->
 	case Reply of
+		no_games -> <<"NO_GAMES">>;
 		seek_canceled -> <<"SEEK_CANCELED">>;
 		no_seek_found -> <<"NO_SEEK_FOUND">>;
 		ok_quit -> <<"OK_QUIT">>;
@@ -212,8 +219,8 @@ other_disconnected(Pid, GamePid) when is_pid(Pid) ->
 	gen_fsm:sync_send_all_state_event(Pid, {other_disconnected, GamePid}, ?INTERNAL_TIMEOUT).
 
 % @doc Alerts our handler that the other player in a game has reconnected.
-other_returned(Pid, Turn) when is_pid(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, {other_returned, Turn}, ?INTERNAL_TIMEOUT).
+other_returned(Pid, GamePid) when is_pid(Pid), is_pid(GamePid) ->
+	gen_fsm:sync_send_event(Pid, {other_returned, GamePid}, ?INTERNAL_TIMEOUT).
 
 % @doc Sends a notification to the player that a game started.
 game_started(Pid, GameId) ->
@@ -242,7 +249,7 @@ get_state(Pid) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % @doc Initializes state machine to the idle state
 init(ParentPid) ->
-	?log("Starting", []),
+	?log("Starting attached to caller ~w", [ParentPid]),
 	monitor(process, ParentPid),
 	{ok, idle, #state{parent=ParentPid}}.
 
@@ -250,9 +257,11 @@ init(ParentPid) ->
 % doing them in bulk.
 % Generic FSM callback for asynchronous events.
 handle_event({seek_issued, #seek{} = Seek}, State, #state{parent=ParentPid} = Data) ->
+	?log("Notifying player of seek issued ~w", [Seek]),
 	do_seek_issued(Seek, ParentPid),
 	{next_state, State, Data};
 handle_event({seek_removed, SeekId}, State, #state{parent=ParentPid} = Data) ->
+	?log("Notifying player of seek removed ~w", [SeekId]),
 	do_seek_removed(SeekId, ParentPid),
 	{next_state, State, Data};
 handle_event(Event, StateName, Data) ->
@@ -262,22 +271,59 @@ handle_event(Event, StateName, Data) ->
 % @doc Handles player disconnect, game quit and get state requests.
 % Generic callback for synchronous events for all states.
 handle_sync_event(disconnected, _From, State, Data) ->
+	?log("Player has disconnected", []),
 	NewData = do_disconnected(Data),
 	{reply, ok, State, NewData};
-handle_sync_event({reconnected, ParentPid}, _From, State, Data) ->
+handle_sync_event({reconnected, ParentPid}, From, 
+				  State, #state{game_pid=GamePid, game_id=GameId} = Data) ->
+	?log("Yay! Our player has reconnected ~w", [ParentPid]),
 	NewData = do_reconnected(ParentPid, Data),
-	{reply, ok, State, NewData};
+	% Send current information to new parent: current game if any
+	% Assuming that parent is blocking in the reconnect call,
+	% These messages should arrive to it after reconnection is complete.
+	gen_server:reply(From, ok),
+	Self = self(),
+	if
+		is_pid(GamePid) ->
+			GameState = c4_game:game_state(GamePid, self()),
+			ParentPid!{game, GameState#game_state{id=GameId}};
+		true ->
+			ParentPid!no_games,
+			% Send seeks to player now
+			SeekList = c4_game_master:seek_list(),
+			?log("Notifying parent ~w of current seeks ~w", [ParentPid, SeekList]),
+			lists:foreach(
+				fun(#seek{pid=SeekerPid, id=SeekId, variant=Var,board_size=BoardSize} = Seek) ->
+					case SeekerPid of
+						Self -> 
+							ParentPid ! 
+								{
+								 seek_pending, 
+								 #seek{id=SeekId,
+									   variant=Var, 
+									   board_size=BoardSize}
+								};
+						_ -> 
+							do_seek_issued(Seek, ParentPid)
+					end
+				end, SeekList)
+	end,
+	{next_state, State, NewData};
 handle_sync_event({other_disconnected, GamePid}, _From, State, #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data)
   when is_pid(GamePid) ->
+	?log("Other player has disconnected", []),
 	if is_pid(ParentPid) -> ParentPid!{other_disconnected, GameId}; true->ok end,
 	{reply, ok, waiting_for_reconnect, Data#state{prev_state = State}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) 
   when is_pid(GamePid) ->
+	?log("Player is quitting the current game", []),
 	c4_game:quit(GamePid, self()), 
 	{reply, {leaving_game, GameId}, idle, Data#state{game_pid=none, game_id=none}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, Data) ->
+	?log("Received quit_game, but not current game ~w", [GameId]),
 	{reply, {no_game, GameId}, idle, Data};
 handle_sync_event(quit, _From, _StateName, #state{game_pid=GamePid} = Data) ->
+	?log("Player sent quit message, going down", []),
 	Self = self(),
 	c4_player_master:player_quit(Self),
 	if is_pid(GamePid) -> c4_game:quit(GamePid, Self); true -> ok end,
@@ -286,22 +332,27 @@ handle_sync_event(quit, _From, _StateName, #state{game_pid=GamePid} = Data) ->
 handle_sync_event({other_quit, GamePid}, _From, _State, 
 				  #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data) 
   when is_pid(GamePid) ->
+	?log("Other player quit, notifying caller process", []),
 	if is_pid(ParentPid)->ParentPid!{other_quit, GameId};true->ok end,
 	{reply, ok, idle, Data#state{game_id=none, game_pid=none}};
 handle_sync_event(get_state, _From, StateName, State) ->
 	{reply, {StateName, State}, StateName, State};
 handle_sync_event(Event, _From, StateName, Data) ->
-	?log("Unexpected event in state ~w : ~w", [StateName, Event]),
+	?log("Unexpected event in state ~w : ~w ~w", [StateName, Event, Data]),
 	{reply, invalid_command, StateName, Data}.
 
 % @doc Handles death of our caller process (user disconnection). 
 % FSM miscellaneous event handling callback.
 handle_info({'DOWN', _Ref, process, Pid, _Reason}, State, #state{parent=Pid} = Data) ->
+	?log("Calling process has died, going into disconnected mode", []),
 	NewData = do_disconnected(Data),
 	{next_state, State, NewData};
-handle_info({'DOWN', _Ref, process, _Pid, _Reason}, State, Data) ->
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, State, Data) ->
+	?log("Ignoring process down message from ~w", [Pid]),
 	{next_state, State, Data};
 handle_info({timeout, TRef, player_disconnected}, _State, #state{tref=TRef} = Data) ->
+	?log("Player disconnection timed out, going down for good", []),
+	c4_game_master:cancel_seek(self()),
 	{stop, normal, Data#state{tref=none}};
 handle_info(Msg, StateName, Data) ->
 	?log("Unexpected event ~w in state ~w : ~w", [Msg, StateName, Data]),
@@ -345,7 +396,7 @@ idle({new_game, #game_info{} = GameInfo, Turn, Color} = Event, _From, #state{par
 	end,
 	new_game(GameInfo, Turn, Color, State);
 idle(Event, _From, State) ->
-	?log("Unexpected message while idle : ~w", [Event]),
+	?log("Unexpected message while idle : ~w ~w", [Event, State]),
 	{reply, {error, bad_cmd, "Join a game first"}, idle, State}.
 
 % @doc Waiting for this player to move state.
@@ -364,7 +415,7 @@ my_turn({play, GameId, Move}, {ParentPid, _Tag} = From, #state{game_pid=GamePid,
 			{next_state, idle, State#state{game_pid=none}}
 	end;
 my_turn(Event, _From, State) ->
-	?log("Unexpected message while waiting for player to move ~w", [Event]),
+	?log("Unexpected message while waiting for player to move ~w ~w", [Event, State]),
 	{reply, {error, bad_cmd, "Waiting for player move"}, my_turn, State}.
 
 % @doc Waiting for other player to move state.
@@ -387,7 +438,7 @@ other_turn({other_played, GamePid, Move, you_lose}, _From, #state{game_pid=GameP
 	do_seek_issued(SeekList, PPid),
 	{reply, ok, idle, State#state{game_pid=none}};
 other_turn(Event, _From, State) ->
-	?log("Unexpected message while waiting for other player to move ~w", [Event]),
+	?log("Unexpected message while waiting for other player to move ~w ~w", [Event, State]),
 	{reply, {error, bad_cmd, "Waiting for other player to move"}, other_turn, State}.
 
 % @doc Waiting for other player to reconnect.
@@ -396,8 +447,8 @@ waiting_for_reconnect({other_returned, GamePid}, _From,
 	if is_pid(PPid) -> PPid ! {other_returned, GameId}; true->ok end,
 	{reply, ok, PrevState, State};
 waiting_for_reconnect(Event, _From, State) ->
-	?log("Unexpected message while waiting for other player to reconnect ~w", [Event]),
-	{reply, {error, bad_cmd, "Waiting for other player to reconnect"}, other_turn, State}.
+	?log("Unexpected message while waiting for other player to reconnect ~w ~w", [Event, State]),
+	{reply, {error, bad_cmd, "Waiting for other player to reconnect"}, waiting_for_reconnect, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Internal functions
@@ -413,6 +464,7 @@ do_disconnected(#state{game_pid=GamePid} = Data) ->
 		none -> ok;
 		_ -> c4_game:disconnect(GamePid, self())
 	end,
+	?log("Setting timer to stop player process in ~w seconds", [?DISCONNECT_TIMEOUT/1000]),
 	TRef = erlang:start_timer(?DISCONNECT_TIMEOUT, self(), player_disconnected),
 	Data#state{parent=none, tref=TRef}.
 

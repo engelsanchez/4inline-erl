@@ -13,6 +13,13 @@ nolog(_Format, _Args) -> ok.
 -define(LOG_STATE_INTERVAL, 1 * 60 * 1000).
 -define(MAX_GAME_ID,1000000).
 -define(MAX_PLAYER_ID,1000000).
+% % Returns the piece value on the given row,column
+-define(piece(Board, Row, Col),element(Col, element(Row, Board))).
+-define(num_rows(Board), erlang:tuple_size(Board)).
+-define(num_cols(Board), erlang:tuple_size(element(1, Board))).
+
+%%%%%%%%%%%%
+% Common types
 -record(board_size, {rows=7, cols=6}).
 -type game_var() :: std | pop.
 %% Game Variant
@@ -37,5 +44,13 @@ nolog(_Format, _Args) -> ok.
 		board_size :: #board_size{}, 
 		variant = std :: game_var(), 
 		type = anon :: game_type()
+		}).
+-record(game_state, {
+		id = none :: game_id(),
+		variant :: game_var(),
+		board_size :: #board_size{},
+		board ::  new | tuple(),
+		turn :: turn(),
+		color :: 1|2
 		}).
 

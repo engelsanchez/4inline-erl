@@ -9,7 +9,7 @@
 % gen_server callbacks
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2, code_change/3]).
 % Public API
--export([start/1, start_link/1, play/3, disconnect/2, abandon/1, quit/2]).
+-export([start/1, start_link/1, play/3, game_state/2, disconnect/2, reconnect/2, abandon/1, quit/2]).
 
 % gen_server State data structure
 -record(state, {p1=none, p1conn=false, color1, p2=none, p2conn=false, color2, board, game_var}).
@@ -32,10 +32,19 @@ start_link(GameInfo) ->
 play(GamePid, PlayerPid, {drop, Col}) ->
 	gen_server:call(GamePid, {play, PlayerPid, {drop, Col}}, ?INTERNAL_TIMEOUT).
 
-% @doc Called when a player has been disconnected (may come back).
+% @doc Returns information about the game relevant to the calling player
+game_state(GamePid, PlayerPid) ->
+	gen_server:call(GamePid, {game_state, PlayerPid}, ?INTERNAL_TIMEOUT).
+
+% @doc Marks player as disconnected from the game and notifies other player.
 -spec(disconnect(pid(), pid()) -> ok).
 disconnect(GamePid, PlayerPid) ->
 	gen_server:call(GamePid, {disconnected, PlayerPid}, ?INTERNAL_TIMEOUT).
+
+% @doc Marks player as connected again and notifies other player.
+-spec(reconnect(pid(), pid()) -> ok).
+reconnect(GamePid, PlayerPid) ->
+	gen_server:call(GamePid, {reconnected, PlayerPid}, ?INTERNAL_TIMEOUT).
 
 % @doc Stops the game
 abandon(GamePid) ->
@@ -123,11 +132,24 @@ handle_call({disconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State
 handle_call({reconnected, P1}, _From, #state{p1=P1, p1conn=false, p2=P2} = State) ->
 	c4_player:other_returned(P2, self()),
 	{reply, ok, State#state{p1conn=true}};
-handle_call({reconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State) ->
-	c4_player:other_returned(P1),
+handle_call({reconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=false} = State) ->
+	c4_player:other_returned(P1, self()),
 	{reply, ok, State#state{p2conn=true}};
 handle_call({abandon}, _From, State) ->
 	{stop, normal, ok, State};
+handle_call({game_state, Pid}, _From, 
+			#state{p1=P1, p2=P2, color1=C1,color2=C2, board=Board, game_var=Variant} = State)
+	when Pid =:= P1;Pid =:= P2 ->
+	if
+		Pid =:= P1 -> Turn = your_turn,Color=C1;
+		Pid =:= P2 -> Turn = other_turn,Color=C2
+	end,
+	{reply, #game_state{turn = Turn,
+						color=Color,
+						variant = Variant,
+						board=Board, 
+						board_size=#board_size{rows=?num_rows(Board),cols=?num_cols(Board)}
+					   }, State}; 
 handle_call(Msg, _From, State) ->
 	?log("Unexpected message ~w : ~w", [Msg, State]),
 	{reply, {error, invalid_command}, State}.

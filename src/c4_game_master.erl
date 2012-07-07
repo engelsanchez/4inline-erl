@@ -34,7 +34,7 @@ start_link() ->
 seek(Seek) ->
 	gen_server:call(?MODULE, {seek, Seek}, ?INTERNAL_TIMEOUT).
 
-% @doc Call when a player requests to cancel all pending seeks.
+% @doc Cancels all pending seeks for the given player.
 -spec(cancel_seek(pid()) -> seek_canceled | no_seek_found).
 cancel_seek(Pid) ->
 	gen_server:call(?MODULE, {cancel_seek, Pid}, ?INTERNAL_TIMEOUT).

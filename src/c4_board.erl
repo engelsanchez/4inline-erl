@@ -5,10 +5,6 @@
 
 % Number of pieces required to be in a line for a win.
 -define(NUM_INLINE, 4).
-% % Returns the piece value on the given row,column
--define(piece(Board, Row, Col),element(Col, element(Row, Board))).
--define(num_rows(Board), erlang:tuple_size(Board)).
--define(num_cols(Board), erlang:tuple_size(element(1, Board))).
 -include("c4_common.hrl").
 
 % @doc Checks if a board size is supported (7x6, 8x7, 9x7, 10x7)

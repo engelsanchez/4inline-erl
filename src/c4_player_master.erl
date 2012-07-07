@@ -159,7 +159,8 @@ handle_cast({notify_seek_issued, Seek}, State) ->
 handle_info({'EXIT', Pid, _Reason}, #state{parent=Pid} = State) ->
 	{stop, parent_die, State};
 handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
-	% @todo Remove player entries.
+	?log("Player ~w down, canceling seeks and removing player info", [Pid]),
+	c4_game_master:cancel_seek(Pid),
 	case ets:lookup(c4_player_pid_tbl, Pid) of
 		[] -> {noreply, State}; 
 		[{Pid, PlayerId}] -> 
