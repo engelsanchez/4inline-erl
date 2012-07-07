@@ -309,16 +309,22 @@ handle_sync_event({reconnected, ParentPid}, From,
 				end, SeekList)
 	end,
 	{next_state, State, NewData};
-handle_sync_event({other_disconnected, GamePid}, _From, State, #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data)
+handle_sync_event({other_disconnected, GamePid}, _From, State, 
+				  #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data)
   when is_pid(GamePid) ->
 	?log("Other player has disconnected", []),
 	if is_pid(ParentPid) -> ParentPid!{other_disconnected, GameId}; true->ok end,
 	{reply, ok, waiting_for_reconnect, Data#state{prev_state = State}};
-handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) 
+handle_sync_event({quit_game, GameId}, From, _StateName, 
+				  #state{game_id = GameId, game_pid=GamePid, parent=ParentPid} = Data) 
   when is_pid(GamePid) ->
 	?log("Player is quitting the current game", []),
-	c4_game:quit(GamePid, self()), 
-	{reply, {leaving_game, GameId}, idle, Data#state{game_pid=none, game_id=none}};
+	c4_game:quit(GamePid, self()),
+	gen_fsm:reply(From, {leaving_game, GameId}),
+	% @todo When multiple games are allowed, we will only notify when all games are finished.
+	SeekList = c4_game_master:register_for_seeks(self()),
+	do_seek_issued(SeekList, ParentPid),
+	{next_state , idle, Data#state{game_pid=none, game_id=none}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, Data) ->
 	?log("Received quit_game, but not current game ~w", [GameId]),
 	{reply, {no_game, GameId}, idle, Data};
@@ -334,6 +340,9 @@ handle_sync_event({other_quit, GamePid}, _From, _State,
   when is_pid(GamePid) ->
 	?log("Other player quit, notifying caller process", []),
 	if is_pid(ParentPid)->ParentPid!{other_quit, GameId};true->ok end,
+	% @todo When multiple games are allowed, we will only notify when all games are finished.
+	SeekList = c4_game_master:register_for_seeks(self()),
+	do_seek_issued(SeekList, ParentPid),
 	{reply, ok, idle, Data#state{game_id=none, game_pid=none}};
 handle_sync_event(get_state, _From, StateName, State) ->
 	{reply, {StateName, State}, StateName, State};
