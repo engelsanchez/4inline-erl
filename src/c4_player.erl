@@ -272,7 +272,7 @@ handle_sync_event({other_disconnected, GamePid}, _From, State, #state{game_pid=G
 	if is_pid(ParentPid) -> ParentPid!{other_disconnected, GameId}; true->ok end,
 	{reply, ok, waiting_for_reconnect, Data#state{prev_state = State}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) 
-  when is_pid(GameId) ->
+  when is_pid(GamePid) ->
 	c4_game:quit(GamePid, self()), 
 	{reply, {leaving_game, GameId}, idle, Data#state{game_pid=none, game_id=none}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, Data) ->
