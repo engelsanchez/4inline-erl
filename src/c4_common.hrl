@@ -9,6 +9,8 @@ nolog(_Format, _Args) -> ok.
 
 -define(ends_with(Bin, Str), Str == binary_part(Bin, {byte_size(Bin), -byte_size(Str)})).
 -define(INTERNAL_TIMEOUT, 1000000).
+% Log internal state every N minutes
+-define(LOG_STATE_INTERVAL, 1 * 60 * 1000).
 -define(MAX_GAME_ID,1000000).
 -define(MAX_PLAYER_ID,1000000).
 -record(board_size, {rows=7, cols=6}).

@@ -73,6 +73,7 @@ init(ParentId) ->
 	ets:new(c4_player_notify_tbl, [named_table, private, set]),
 	ets:new(c4_player_id_tbl, [named_table, private, set]),
 	ets:new(c4_player_pid_tbl, [named_table, private, set]),
+	erlang:start_timer(?LOG_STATE_INTERVAL, self(), log_state),
 	{ok, #state{parent=ParentId}}.
 
 % @doc Deletes the player table.
@@ -96,7 +97,7 @@ new_player({ParentPid, _Tag} = From, State) ->
 	gen_server:reply(From, {ok, Pid, PlayerId}),
 	% Send seeks to player now
 	SeekList = c4_game_master:seek_list(),
-	?log("Notifying of current seeks ~w", [SeekList]),
+	?log("Notifying ~w of current seeks ~w", [Pid, SeekList]),
 	lists:foreach(
 		fun(#seek{pid=SeekerPid} = Seek) ->
 			case SeekerPid of
@@ -142,7 +143,7 @@ handle_call({notify_seek_removed, SeekId, P1, P2}, _From, State) ->
 	send_seek_removed(SeekId, P1, P2),
 	{reply, ok, State};
 handle_call(stop, _From, State) ->
-	?log("Received STOP message", []),
+	?log("Received STOP message. Goodbye!", []),
 	{stop, normal, ok, State}.
 
 % @doc Handles player notification requests.
@@ -154,10 +155,54 @@ handle_cast({notify_seek_issued, Seek}, State) ->
 	send_seek_issued(Seek),
 	{noreply, State}. 
 
+% @doc Callback for misc events (does nothing).
+handle_info({'EXIT', Pid, _Reason}, #state{parent=Pid} = State) ->
+	{stop, parent_die, State};
+handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
+	% @todo Remove player entries.
+	case ets:lookup(c4_player_pid_tbl, Pid) of
+		[] -> {noreply, State}; 
+		[{Pid, PlayerId}] -> 
+			ets:delete(c4_player_pid_tbl, Pid),
+			ets:delete(c4_player_id_tbl, PlayerId),
+			{noreply, State}
+	end;
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, State) ->
+	do_player_quit(Pid),
+	{noreply, State};
+handle_info({timeout, _Ref, log_state}, State) ->
+	N = ets:info(c4_player_notify_tbl, size),
+	P = ets:info(c4_player_pid_tbl, size),
+	I = ets:info(c4_player_id_tbl, size),
+	?log("~w state:~nPlayer notify = ~w~nPids = ~w~nIds = ~w~n", [?MODULE, N, P, I]),
+	erlang:start_timer(?LOG_STATE_INTERVAL, self(), log_state),
+	{noreply, State};
+handle_info(Event,  State) ->
+	unexpected(Event, State).
+
+code_change(_OldVsn, State, _Extra) ->
+	{ok, State}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Internal functions
+unexpected(Event, State) ->
+	?log("Unexpected event ~w : ~w", [Event, State]),
+	{noreply, State}.
+
+do_player_quit(Pid) ->
+	case ets:lookup(c4_player_pid_tbl, Pid) of
+		[{Pid, PlayerId}] ->
+			ets:delete(c4_player_notify_tbl, Pid),
+			ets:delete(c4_player_pid_tbl, Pid),
+			ets:delete(c4_player_id_tbl, PlayerId),
+			ok;
+		[] -> no_player
+	end.
+
 % @doc Asynchronously sends a seek issued message to all registered players
 % except for the one issuing the seek.
 send_seek_issued(#seek{pid=SPid} = Seek) ->
-	?log("Sending seek issued msg to everyone but ~w", [SPid]),
+	?log("Sending seek issued msg to everyone but ~w : ~w", [SPid, Seek]),
 	ets:foldl(
 		fun({Pid}, []) -> 
 			case Pid of 
@@ -188,39 +233,4 @@ send_seek_removed(SeekId, P1, P2) ->
 		c4_player_notify_tbl
 		),
 	ok.
-
-% @doc Callback for misc events (does nothing).
-handle_info({'EXIT', Pid, _Reason}, #state{parent=Pid} = State) ->
-	{stop, parent_die, State};
-handle_info({'EXIT', Pid, _Reason}, State) when is_pid(Pid) ->
-	% @todo Remove player entries.
-	case ets:lookup(c4_player_pid_tbl, Pid) of
-		[] -> {noreply, State}; 
-		[{Pid, PlayerId}] -> 
-			ets:delete(c4_player_pid_tbl, Pid),
-			ets:delete(c4_player_id_tbl, PlayerId),
-			{noreply, State}
-	end;
-handle_info({'DOWN', _Ref, process, Pid, _Reason}, State) ->
-	do_player_quit(Pid),
-	{noreply, State};
-handle_info(Event,  State) ->
-	unexpected(Event, State).
-
-unexpected(Event, State) ->
-	?log("Unexpected event ~w : ~w", [Event, State]),
-	{noreply, State}.
-
-code_change(_OldVsn, State, _Extra) ->
-	{ok, State}.
-
-do_player_quit(Pid) ->
-	case ets:lookup(c4_player_pid_tbl, Pid) of
-		[{Pid, PlayerId}] ->
-			ets:delete(c4_player_notify_tbl, Pid),
-			ets:delete(c4_player_pid_tbl, Pid),
-			ets:delete(c4_player_id_tbl, PlayerId),
-			ok;
-		[] -> no_player
-	end.
 

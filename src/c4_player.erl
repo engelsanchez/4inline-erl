@@ -16,14 +16,15 @@
 -export([start/1, start_link/1, text_cmd/2, text_reply/1, get_state/1,
 	seek/2, cancel_seek/1, cancel_seek/2, accept_seek/2, joined/4, play/3, 
 	other_played/4, quit_game/2, other_quit/2, other_returned/2, 
-	other_disconnected/1, disconnected/1, reconnected/2, game_started/2, 
+	other_disconnected/2, disconnected/1, reconnected/2, game_started/2, 
 	seek_issued/2, seek_removed/2, quit/1]).
 -include("c4_common.hrl").
 -record(state, {
 		game_pid = none  :: none | pid(), 
 		game_id = none	:: none | pos_integer(), 
 		parent = none :: none | pid(),
-		tref = none :: none | reference()
+		tref = none :: none | reference(),
+		prev_state = idle :: atom()
 		}).
 
 % Width of integer fields in input text binaries.
@@ -128,6 +129,8 @@ text_reply({invalid_move, GameId}) when is_integer(GameId) ->
 	<<"INVALID_MOVE ", (i2b(GameId))/binary>>;
 text_reply({leaving_game, GameId}) when is_integer(GameId) ->
 	<<"LEAVING_GAME ", (i2b(GameId))/binary>>;
+text_reply({no_game, GameId}) when is_integer(GameId) ->
+	<<"NO_GAME ", (i2b(GameId))/binary>>;
 text_reply({other_quit, GameId}) when is_integer(GameId) ->
 	<<"OTHER_QUIT ", (i2b(GameId))/binary>>;
 text_reply({seek_canceled, SeekId}) ->
@@ -204,9 +207,9 @@ reconnected(Pid, ParentPid) ->
 	gen_fsm:sync_send_all_state_event(Pid, {reconnected, ParentPid}, ?INTERNAL_TIMEOUT).
 
 % @doc Alerts our parent that the other player in a game has disconnected.
--spec(other_disconnected(pid()) -> ok).
-other_disconnected(Pid) when is_pid(Pid) ->
-	gen_fsm:sync_send_all_state_event(Pid, other_disconnected, ?INTERNAL_TIMEOUT).
+-spec(other_disconnected(pid(), pid()) -> ok).
+other_disconnected(Pid, GamePid) when is_pid(Pid) ->
+	gen_fsm:sync_send_all_state_event(Pid, {other_disconnected, GamePid}, ?INTERNAL_TIMEOUT).
 
 % @doc Alerts our handler that the other player in a game has reconnected.
 other_returned(Pid, Turn) when is_pid(Pid) ->
@@ -264,7 +267,12 @@ handle_sync_event(disconnected, _From, State, Data) ->
 handle_sync_event({reconnected, ParentPid}, _From, State, Data) ->
 	NewData = do_reconnected(ParentPid, Data),
 	{reply, ok, State, NewData};
-handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) ->
+handle_sync_event({other_disconnected, GamePid}, _From, State, #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data)
+  when is_pid(GamePid) ->
+	if is_pid(ParentPid) -> ParentPid!{other_disconnected, GameId}; true->ok end,
+	{reply, ok, waiting_for_reconnect, Data#state{prev_state = State}};
+handle_sync_event({quit_game, GameId}, _From, _StateName, #state{game_id = GameId, game_pid=GamePid} = Data) 
+  when is_pid(GameId) ->
 	c4_game:quit(GamePid, self()), 
 	{reply, {leaving_game, GameId}, idle, Data#state{game_pid=none, game_id=none}};
 handle_sync_event({quit_game, GameId}, _From, _StateName, Data) ->
@@ -275,9 +283,10 @@ handle_sync_event(quit, _From, _StateName, #state{game_pid=GamePid} = Data) ->
 	if is_pid(GamePid) -> c4_game:quit(GamePid, Self); true -> ok end,
 	c4_game_master:cancel_seek(Self),
 	{stop, normal, ok_quit, Data};
-handle_sync_event({other_quit, GamePid}, _From, _State, #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data) 
-  when is_pid(GamePid), is_pid(ParentPid) ->
-	ParentPid!{other_quit, GameId},
+handle_sync_event({other_quit, GamePid}, _From, _State, 
+				  #state{game_pid=GamePid, game_id=GameId, parent=ParentPid} = Data) 
+  when is_pid(GamePid) ->
+	if is_pid(ParentPid)->ParentPid!{other_quit, GameId};true->ok end,
 	{reply, ok, idle, Data#state{game_id=none, game_pid=none}};
 handle_sync_event(get_state, _From, StateName, State) ->
 	{reply, {StateName, State}, StateName, State};
@@ -382,10 +391,13 @@ other_turn(Event, _From, State) ->
 	{reply, {error, bad_cmd, "Waiting for other player to move"}, other_turn, State}.
 
 % @doc Waiting for other player to reconnect.
-waiting_for_reconnect({other_returned, Turn}, _From, #state{parent=PPid} = State) ->
-	NextState = case Turn of your_turn->my_turn;other_turn->other_turn end,
-	PPid ! {other_returned, Turn},
-	{reply, ok, NextState, State}.
+waiting_for_reconnect({other_returned, GamePid}, _From, 
+					  #state{game_pid=GamePid, game_id=GameId, parent=PPid, prev_state=PrevState} = State) ->
+	if is_pid(PPid) -> PPid ! {other_returned, GameId}; true->ok end,
+	{reply, ok, PrevState, State};
+waiting_for_reconnect(Event, _From, State) ->
+	?log("Unexpected message while waiting for other player to reconnect ~w", [Event]),
+	{reply, {error, bad_cmd, "Waiting for other player to reconnect"}, other_turn, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Internal functions

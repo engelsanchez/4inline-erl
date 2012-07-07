@@ -115,13 +115,13 @@ handle_call({quit, Pid}, _From, #state{p1=P1, p2=P2} = State) ->
 	c4_player:other_quit(case Pid of P1->P2; P2->P1 end, self()),
 	{stop, normal, ok, State};
 handle_call({disconnected, P1}, _From, #state{p1=P1, p1conn=true, p2=P2} = State) ->
-	c4_player:other_disconnected(P2),
+	c4_player:other_disconnected(P2, self()),
 	{reply, ok, State#state{p1conn=false}};
 handle_call({disconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State) ->
-	c4_player:other_disconnected(P1),
+	c4_player:other_disconnected(P1, self()),
 	{reply, ok, State#state{p2conn=false}};
 handle_call({reconnected, P1}, _From, #state{p1=P1, p1conn=false, p2=P2} = State) ->
-	c4_player:other_returned(P2),
+	c4_player:other_returned(P2, self()),
 	{reply, ok, State#state{p1conn=true}};
 handle_call({reconnected, P2}, _From, #state{p1=P1, p2=P2, p2conn=true} = State) ->
 	c4_player:other_returned(P1),

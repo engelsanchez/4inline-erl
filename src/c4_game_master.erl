@@ -8,9 +8,12 @@
 % gen_server callbacks
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2, code_change/3]).
 % Public API
--export([start/0, start_link/0, seek/1, cancel_seek/1, cancel_seek/2, accept_seek/1, register_for_seeks/1, seek_list/0, game_list/0, stop/0]).
--record(state, {seeks, seeks_by_player, seeks_by_id, parent, seed=now()}).
+-export([start/0, start_link/0, stop/0,
+		 seek/1, cancel_seek/1, cancel_seek/2, accept_seek/1,
+		 game_finished/1, 
+		 register_for_seeks/1, seek_list/0, game_list/0]).
 -include("c4_common.hrl").
+-record(state, {seeks, seeks_by_player, seeks_by_id, parent, seed=now()}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Public API
@@ -50,6 +53,10 @@ accept_seek(SeekId) ->
 game_list() ->
 	gen_server:call(?MODULE, game_list, ?INTERNAL_TIMEOUT).
 
+% @doc Removes game from our database
+game_finished(GamePid) ->
+	gen_server:call(?MODULE, {game_finished, GamePid}, ?INTERNAL_TIMEOUT).
+
 % @doc Returns the list of all pending seeks.
 seek_list() ->
 	gen_server:call(?MODULE, seek_list, ?INTERNAL_TIMEOUT).
@@ -72,16 +79,19 @@ stop() ->
 init(ParentPid)->
 	?log("Starting", []),
 	process_flag(trap_exit, true),
-	ets:new(c4_game_tbl, [named_table, private, set]),
+	ets:new(c4_game_id_tbl, [named_table, private, set]),
+	ets:new(c4_game_pid_tbl, [named_table, private, set]),
 	Seeks = dict:new(),
 	SeeksByPlayer= dict:new(),
 	SeeksById = dict:new(),
+	erlang:start_timer(?LOG_STATE_INTERVAL, self(), log_state),
 	{ok, #state{seeks=Seeks, seeks_by_player=SeeksByPlayer, seeks_by_id=SeeksById, parent=ParentPid, seed=now()}}.
 
 % @doc Deletes player and game tables upon termination.
 % Callback function for the OTP gen_fsm behavior.
 terminate(_Reason, _Data) ->
-	ets:delete(c4_game_tbl),
+	ets:delete(c4_game_id_tbl),
+	ets:delete(c4_game_pid_tbl),
 	ok.
 
 % @doc The main 'loop' state of this FSM handles all messages 
@@ -103,16 +113,20 @@ handle_call({seek, #seek{pid=Pid, type=anon, variant=Var, board_size=BoardSize} 
 					?log("Seek has match. Starting new game", []),
 					{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var, type=anon}),
 					c4_player:joined(OPid, #game_info{pid=GamePid, id=SeekId, board_size=BoardSize, variant=Var, type=anon}, your_turn, 1),
-					ets:insert(c4_game_tbl, {SeekId, GamePid}),
+					ets:insert(c4_game_id_tbl, {SeekId, GamePid}),
+					ets:insert(c4_game_pid_tbl, {GamePid, SeekId}),
 					c4_player_master:unregister_player(OPid),
 					c4_player_master:unregister_player(Pid),
 					c4_player_master:notify_seek_removed(SeekId, Pid, OPid),
 					Seeks2 = dict:erase(Key, Seeks),
 					SeeksById2 = dict:erase(SeekId, SeeksById),
 					{ok, PlayerSeeks} = dict:find(OPid, SeeksByPlayer),
-					SeeksByPlayer2 = dict:store(OPid, lists:delete(SeekId, PlayerSeeks), SeeksByPlayer),
+					case lists:delete(SeekId, PlayerSeeks) of
+						[] -> SeeksByPlayer2 = dict:erase(OPid, SeeksByPlayer);
+						NewSBPList -> SeeksByPlayer2 = dict:store(OPid, NewSBPList, SeeksByPlayer)
+					end,
 					NewState = State#state{seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2},
-					?log("State ~w", [NewState]),
+					%?log("State ~w", [NewState]),
 					{
 						reply,
 						{new_game, #game_info{pid=GamePid, id=SeekId, board_size=BoardSize, variant=Var, type=anon}, other_turn, 2}, 
@@ -128,7 +142,7 @@ handle_call({seek, #seek{pid=Pid, type=anon, variant=Var, board_size=BoardSize} 
 			SeeksById2 = dict:store(SeekId, NewSeek, SeeksById),
 			c4_player_master:notify_seek_issued(NewSeek),
 			NewState = State#state{seeks=Seeks2, seeks_by_player=SeeksByPlayer2, seeks_by_id=SeeksById2, seed=Seed2},
-			?log("State ~w", [NewState]),
+			%?log("State ~w", [NewState]),
 			{reply, {seek_pending, SeekId}, NewState}
 	end;
 % Process play with friend request (private seek).
@@ -137,7 +151,7 @@ handle_call({seek, #seek{pid=Pid, type=priv, variant=Var, board_size=BoardSize} 
 	% Add to list of private games (to be started).
 	{GameId, Seed2} = next_game_id(Seed),
 	GameInfo = #game_info{variant=Var, board_size=BoardSize, ppid1=Pid, type=priv},
-	ets:insert(c4_game_tbl, {GameId, GameInfo}),
+	ets:insert(c4_game_id_tbl, {GameId, GameInfo}),
 	{reply, {new_game, pending, GameInfo, your_turn, 1}, State#state{seed=Seed2}};
 handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, seeks=Seeks, seeks_by_player=SeeksByPlayer} = State) ->
 	?log("Processing accept seek ~w", [SeekId]),
@@ -147,17 +161,21 @@ handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, se
 			{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var, type=anon}),
 			GameId=SeekId,
 			c4_player:joined(OPid, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, your_turn, 1),
-			ets:insert(c4_game_tbl, {GameId, GamePid}),
+			ets:insert(c4_game_id_tbl, {GameId, GamePid}),
+			ets:insert(c4_game_pid_tbl, {GamePid, GameId}),
 			% Stop bugging these two players with seek notifications
 			c4_player_master:unregister_player(OPid),
 			c4_player_master:unregister_player(Pid),
 			c4_player_master:notify_seek_removed(SeekId, Pid, OPid),
 			Seeks2 = dict:erase(Seek#seek{pid=none, id=none}, Seeks),
 			{ok, SeekList} = dict:find(OPid, SeeksByPlayer),
-			SeeksByPlayer2 = dict:store(OPid, lists:delete(SeekId, SeekList), SeeksByPlayer),
+			case lists:delete(SeekId, SeekList) of
+				[] -> SeeksByPlayer2 = dict:erase(OPid, SeeksByPlayer);
+				NewSBP -> SeeksByPlayer2 = dict:store(OPid, NewSBP, SeeksByPlayer)
+			end,
 			SeeksById2 = dict:erase(SeekId, SeeksById),
 			NewState = State#state{seeks=Seeks2, seeks_by_player=SeeksByPlayer2, seeks_by_id=SeeksById2},
-			?log("State ~w", NewState),
+			%?log("State ~w", [NewState]),
 			{
 				reply,
 				{new_game, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, other_turn, 2},
@@ -179,20 +197,21 @@ handle_call({cancel_seek, Pid}, _From, State) when is_pid(Pid) ->
 handle_call({cancel_seek, Pid, SeekId}, _From, State) when is_integer(SeekId) ->
 	case do_remove_seek(Pid, SeekId, State) of
 		{ok, NewState} -> 
-			?log("State ~w", NewState),
+			%?log("State ~w", [NewState]),
 			{reply, seek_canceled, NewState};
 		no_seek_found -> {reply, no_seek_found, State}
 	end;
 % Request to join a pending game
 handle_call({join_game, PlayerPid, GameId}, _From, State) ->
 	% If found, notify any player already in the game.
-	case ets:lookup(c4_game_tbl, GameId) of
-		[{GameId, GameVar, BoardSize, Other}] -> 
+	case ets:lookup(c4_game_id_tbl, GameId) of
+		[{GameId, #game_info{variant=GameVar, board_size=BoardSize, ppid1=Other}}] -> 
 			{ok, GamePid} = c4_game:start_link({ppid1=Other, ppid2=PlayerPid, board_size=BoardSize, variant=GameVar}),
 			c4_player:joined(Other, GamePid, your_turn),
-			ets:delete(c4_game_tbl, GameId),
+			ets:insert(c4_game_id_tbl, {GameId, GamePid}),
+			ets:insert(c4_game_pid_tbl, {GamePid, GameId}),
 			{reply, {new_game, GamePid, GameId, other_turn}, State};
-		[] -> {reply, no_game, State}
+		_ -> {reply, no_game, State}
 	end;
 handle_call(seek_list, _From, State) ->
 	{reply, get_seek_list(State), State};
@@ -203,7 +222,7 @@ handle_call({register_for_seeks, PlayerPid}, _From, State) ->
 	{reply, get_seek_list(State), State};
 handle_call(game_list, _From, State) ->
 	% Go over the entire game table and build a list
-	GameList = ets:foldl(fun(X, L) -> [X | L] end, [], c4_game_tbl),
+	GameList = ets:foldl(fun(X, L) -> [X | L] end, [], c4_game_pid_tbl),
 	{reply, GameList, State};
 handle_call(stop, _From, State) ->
 	{stop, normal, ok, State}.
@@ -213,16 +232,33 @@ handle_call(stop, _From, State) ->
 handle_info({'EXIT', Pid, _Reason}, #state{parent=Pid} = State) ->
 	?log("Parent process went down, goodbye!", []),
 	{stop, parent_died, State};
-handle_info({'EXIT', Pid, _Reason}, State) ->
-	?log("Game process ~w went down", [Pid]),
+handle_info({'EXIT', GamePid, _Reason}, State) ->
+	?log("Game process ~w went down", [GamePid]),
+	case ets:lookup(c4_game_pid_tbl, GamePid) of
+		[{GamePid, GameId}] -> 
+			ets:delete(c4_game_id_tbl, GameId);
+		_ -> ok
+	end,
+	ets:delete(c4_game_pid_tbl, GamePid),
 	{noreply, State};
 % On user disconnect, remove from player and seeks data.
 handle_info({'DOWN', _Ref, process, P1, _Reason}, State) ->
 	?log("A player process went down", []),
-	ets:delete(c4_player_tbl, P1),
 	{_n, NewState} = remove_player_seeks(P1, State),
-	?log("State ~w", NewState),
-	{noreply, NewState}.
+	%?log("State ~w", [NewState]),
+	{noreply, NewState};
+handle_info({timeout, _Ref, log_state}, 
+			#state{seeks=Seeks,seeks_by_id=SeeksById, seeks_by_player=SeeksByPlayer} = State) ->
+	IdTblSize = ets:info(c4_game_id_tbl, size),
+	PidTblSize = ets:info(c4_game_pid_tbl, size),
+	S = dict:to_list(Seeks),
+	SI = dict:to_list(SeeksById),
+	SP = dict:to_list(SeeksByPlayer),
+	?log("~w state: ~nid entries = ~w ~npid entries = ~w~nSeeks = ~w~n"
+		"Seeks by Id = ~w~nSeeks by player = ~w", 
+		[?MODULE, IdTblSize, PidTblSize, S, SI, SP]),
+	erlang:start_timer(?LOG_STATE_INTERVAL, self(), log_state),
+	{noreply, State}.
 
 % @doc Handles the (asynchronous) stop message
 % Generic FSM callback for synchronous messages.
@@ -245,7 +281,7 @@ code_change(_OldVsn, StateData, _Extra) ->
 next_game_id(Seed) ->
 	{GameId, Seed2} = random:uniform_s(?MAX_GAME_ID, Seed),
 	% If in use, try again.
-	case ets:member(c4_game_tbl, GameId) of
+	case ets:member(c4_game_id_tbl, GameId) of
 		true -> next_game_id(Seed2);
 		false -> {GameId, Seed2}
 	end.
@@ -285,7 +321,7 @@ do_remove_seek(Pid, SeekId, #state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_pl
 				end,
 			c4_player_master:notify_seek_removed(SeekId, Pid, none),
 			NewState = State#state{seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2},
-			?log("State ~w", [NewState]),
+			%?log("State ~w", [NewState]),
 			{ok, NewState};
 		{ok, _Seek} -> no_seek_found;
 		error -> no_seek_found
