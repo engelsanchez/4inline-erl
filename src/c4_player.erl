@@ -421,6 +421,12 @@ my_turn({play, GameId, Move}, {ParentPid, _Tag} = From, #state{game_pid=GamePid,
 			% @todo When multiple games are allowed, we will only notify when all games are finished.
 			SeekList = c4_game_master:register_for_seeks(self()),
 			do_seek_issued(SeekList, ParentPid),
+			{next_state, idle, State#state{game_pid=none}};
+		no_moves ->
+			gen_fsm:reply(From, {no_moves, GameId, Move}),
+			% @todo When multiple games are allowed, we will only notify when all games are finished.
+			SeekList = c4_game_master:register_for_seeks(self()),
+			do_seek_issued(SeekList, ParentPid),
 			{next_state, idle, State#state{game_pid=none}}
 	end;
 my_turn(Event, _From, State) ->
@@ -437,7 +443,7 @@ other_turn({other_played, GamePid, Move, no_moves}, _From, #state{game_pid=GameP
   when is_pid(GamePid), is_pid(PPid) ->
 	?log("Other player played and board full ~w", [Move]),
 	PPid ! {other_played_no_moves, GameId, Move},
-	{reply, ok, my_turn, State#state{game_pid=none}};
+	{reply, ok, idle, State#state{game_pid=none, game_id=none}};
 other_turn({other_played, GamePid, Move, you_lose}, _From, #state{game_pid=GamePid, game_id=GameId, parent=PPid} = State) 
   when is_pid(GamePid), is_pid(PPid) ->
 	?log("Other player played ~w and wins", [Move]),

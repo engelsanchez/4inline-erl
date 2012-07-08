@@ -117,16 +117,10 @@ handle_call({seek, #seek{pid=Pid, type=anon, variant=Var, board_size=BoardSize} 
 					ets:insert(c4_game_pid_tbl, {GamePid, SeekId}),
 					c4_player_master:unregister_player(OPid),
 					c4_player_master:unregister_player(Pid),
-					c4_player_master:notify_seek_removed(SeekId, Pid, OPid),
-					Seeks2 = dict:erase(Key, Seeks),
-					SeeksById2 = dict:erase(SeekId, SeeksById),
-					{ok, PlayerSeeks} = dict:find(OPid, SeeksByPlayer),
-					case lists:delete(SeekId, PlayerSeeks) of
-						[] -> SeeksByPlayer2 = dict:erase(OPid, SeeksByPlayer);
-						NewSBPList -> SeeksByPlayer2 = dict:store(OPid, NewSBPList, SeeksByPlayer)
-					end,
-					NewState = State#state{seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2},
-					%?log("State ~w", [NewState]),
+					{_SeekIds, Seeks2, SeeksById2, SeeksByPlayer2} =
+						remove_player_seeks([Pid, OPid], Seeks, SeeksById, SeeksByPlayer),
+					NewState = State#state{seeks=Seeks2, seeks_by_player=SeeksByPlayer2, seeks_by_id=SeeksById2},
+					?log("State ~w", [NewState]),
 					{
 						reply,
 						{new_game, #game_info{pid=GamePid, id=SeekId, board_size=BoardSize, variant=Var, type=anon}, other_turn, 2}, 
@@ -156,7 +150,7 @@ handle_call({seek, #seek{pid=Pid, type=priv, variant=Var, board_size=BoardSize} 
 handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, seeks=Seeks, seeks_by_player=SeeksByPlayer} = State) ->
 	?log("Processing accept seek ~w", [SeekId]),
 	case dict:find(SeekId, SeeksById) of
-		{ok, #seek{pid=OPid, board_size=BoardSize, variant=Var} = Seek} -> 
+		{ok, #seek{pid=OPid, board_size=BoardSize, variant=Var}} -> 
 			?log("Seek has match. Starting new game", []),
 			{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var, type=anon}),
 			GameId=SeekId,
@@ -166,16 +160,10 @@ handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, se
 			% Stop bugging these two players with seek notifications
 			c4_player_master:unregister_player(OPid),
 			c4_player_master:unregister_player(Pid),
-			c4_player_master:notify_seek_removed(SeekId, Pid, OPid),
-			Seeks2 = dict:erase(Seek#seek{pid=none, id=none}, Seeks),
-			{ok, SeekList} = dict:find(OPid, SeeksByPlayer),
-			case lists:delete(SeekId, SeekList) of
-				[] -> SeeksByPlayer2 = dict:erase(OPid, SeeksByPlayer);
-				NewSBP -> SeeksByPlayer2 = dict:store(OPid, NewSBP, SeeksByPlayer)
-			end,
-			SeeksById2 = dict:erase(SeekId, SeeksById),
+			{_SeekIds, Seeks2, SeeksById2, SeeksByPlayer2} =
+				remove_player_seeks([Pid, OPid], Seeks, SeeksById, SeeksByPlayer),
 			NewState = State#state{seeks=Seeks2, seeks_by_player=SeeksByPlayer2, seeks_by_id=SeeksById2},
-			%?log("State ~w", [NewState]),
+			?log("State ~w", [NewState]),
 			{
 				reply,
 				{new_game, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, other_turn, 2},
@@ -184,16 +172,23 @@ handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, se
 		error ->
 			{reply, no_seek_found, State}
 	end;
-handle_call({cancel_seek, Pid}, _From, State) when is_pid(Pid) ->
+handle_call({cancel_seek, Pid}, _From, 
+			#state{seeks=Seeks, seeks_by_id=SeeksById, seeks_by_player=SeeksByPlayer} = State) 
+  when is_pid(Pid) ->
 	?log("Canceling seeks for player ~w", [Pid]),
-	case remove_player_seeks(Pid, State) of
-		{N, NewState} when N > 0 -> 
-			?log("Removed ~w seeks found for player ~w ~w", [N, Pid, NewState]),
-			{reply, seek_canceled, NewState}; 
-		{0, State} ->
-			?log("No seeks found for player ~w", [Pid]),
-			{reply, no_seek_found, State}
-	end;
+	{SeekIds, Seeks2, SeeksById2, SeeksByPlayer2} = 
+		remove_player_seeks(Pid, Seeks, SeeksById, SeeksByPlayer),
+	Reply = case SeekIds of 
+				[] ->
+					?log("No seeks found for player ~w", [Pid]),
+					no_seek_found;
+				_ -> 
+					?log("Removed seeks player seeks ~w ~w", [Pid, SeekIds]),
+					seek_canceled
+			end,
+	NewState = State#state{seeks=Seeks2,seeks_by_id=SeeksById2,seeks_by_player=SeeksByPlayer2},
+	?log("State ~w", [NewState]),
+	{reply, Reply, NewState};
 handle_call({cancel_seek, Pid, SeekId}, _From, State) when is_integer(SeekId) ->
 	case do_remove_seek(Pid, SeekId, State) of
 		{ok, NewState} -> 
@@ -242,11 +237,16 @@ handle_info({'EXIT', GamePid, _Reason}, State) ->
 	ets:delete(c4_game_pid_tbl, GamePid),
 	{noreply, State};
 % On user disconnect, remove from player and seeks data.
-handle_info({'DOWN', _Ref, process, P1, _Reason}, State) ->
-	?log("A player process went down", []),
-	{_n, NewState} = remove_player_seeks(P1, State),
-	%?log("State ~w", [NewState]),
-	{noreply, NewState};
+handle_info({'DOWN', _Ref, process, P1, _Reason}, 
+			#state{seeks=Seeks, 
+				   seeks_by_id=SeeksById, 
+				   seeks_by_player=SeeksByPlayer} = State) ->
+	?log("Player process ~w went down", [P1]),
+	{_SeekIds, Seeks2, SeeksById2, SeeksByPlayer2} = 
+		remove_player_seeks(P1, Seeks, SeeksById, SeeksByPlayer),
+	{noreply, State#state{seeks=Seeks2, 
+						  seeks_by_id=SeeksById2, 
+						  seeks_by_player=SeeksByPlayer2}};
 handle_info({timeout, _Ref, log_state}, 
 			#state{seeks=Seeks,seeks_by_id=SeeksById, seeks_by_player=SeeksByPlayer} = State) ->
 	IdTblSize = ets:info(c4_game_id_tbl, size),
@@ -291,20 +291,24 @@ get_seek_list(#state{seeks_by_id=Seeks} = _State) ->
 	% unlike the keys in the seeks dictionary.
 	dict:fold(fun(_K, V, L) -> [V | L] end, [], Seeks).
 
-remove_player_seeks(Pid,#state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_player=SeeksByPlayer} = State) ->
-	case dict:find(Pid, SeeksByPlayer) of
-		error -> {0, State};
-		{ok, []} -> {0, State};
-		{ok, SeekIds} -> 
-			?log("Removing seeks ~w for player ~w", [SeekIds, Pid]),
-			SeeksByPlayer2 = dict:erase(Pid, SeeksByPlayer),
-			SeeksById2 = dict:filter(fun(K,_V) -> not lists:member(K,SeekIds) end, SeeksById),
-			Seeks2 = dict:filter(fun(_K,V) -> not lists:member(V, SeekIds) end, Seeks),
-			c4_player_master:notify_seek_removed(SeekIds, Pid, none),
-			NewState = State#state{seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2},
-			?log("Removed seeks ~w ~w ~w", [Seeks, Seeks2, NewState]),
-			{length(SeekIds), NewState}
-	end.
+% @doc Removes all seeks for the given players and notifies everybody else about it
+remove_player_seeks(PlayerPid, Seeks, SeeksById, SeeksByPlayer) when is_pid(PlayerPid) ->
+	remove_player_seeks([PlayerPid], Seeks, SeeksById, SeeksByPlayer);
+remove_player_seeks(PlayerPids, Seeks, SeeksById, SeeksByPlayer) when is_list(PlayerPids) ->
+	% Compile list of seek ids
+	SeekIds = 
+		dict:fold(fun(K, V, L) -> case lists:member(K, PlayerPids) of true-> V ++ L;false -> L end end, 
+				  [],
+				  SeeksByPlayer),
+	SeeksByPlayer2 =
+		dict:filter(fun(K, _V) -> not lists:member(K, PlayerPids) end, SeeksByPlayer),
+	SeeksById2 =
+		dict:filter(fun(K, _V) -> not lists:member(K, SeekIds) end, SeeksById),
+	Seeks2 = 
+		dict:filter(fun(_K, V) -> not lists:member(V, SeekIds) end, Seeks),
+	c4_player_master:notify_seek_removed(SeekIds, PlayerPids),
+	{SeekIds, Seeks2, SeeksById2, SeeksByPlayer2}.
+
 
 -spec(do_remove_seek(pid(), seek_id, #state{}) ->{ok, #state{}} | {no_seek_found, #state{}}).
 do_remove_seek(Pid, SeekId, #state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_player=SeeksByPlayer} = State) ->
@@ -319,8 +323,10 @@ do_remove_seek(Pid, SeekId, #state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_pl
 					[] -> dict:erase(Pid, SeeksByPlayer);
 					_ -> dict:store(Pid, PlayerSeeks2, SeeksByPlayer)
 				end,
-			c4_player_master:notify_seek_removed(SeekId, Pid, none),
-			NewState = State#state{seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2},
+			c4_player_master:notify_seek_removed(SeekId, Pid),
+			NewState = State#state{seeks=Seeks2, 
+								   seeks_by_id=SeeksById2, 
+								   seeks_by_player=SeeksByPlayer2},
 			%?log("State ~w", [NewState]),
 			{ok, NewState};
 		{ok, _Seek} -> no_seek_found;

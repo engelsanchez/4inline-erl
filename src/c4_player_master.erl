@@ -5,7 +5,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 % Public API
 -export([start/0, start_link/0, stop/0, connect/0, connect/1, register_player/1, 
-		 unregister_player/1, notify_seek_removed/3, notify_seek_issued/1,
+		 unregister_player/1, notify_seek_removed/2, notify_seek_issued/1,
 		 player_quit/1]).
 -include("c4_common.hrl").
 -record(state, {parent}).
@@ -53,10 +53,10 @@ player_quit(Pid) ->
 
 % @doc Sends a seek removed notification to all players 
 % registered to listen to then.
-notify_seek_removed([], _P1, _P2) ->
+notify_seek_removed([], _PidOrList) ->
 	ok;
-notify_seek_removed(SeekId, P1, P2) ->
-	gen_server:call(?MODULE, {notify_seek_removed, SeekId, P1, P2}, ?INTERNAL_TIMEOUT).
+notify_seek_removed(SeekId, PidOrList) ->
+	gen_server:call(?MODULE, {notify_seek_removed, SeekId, PidOrList}, ?INTERNAL_TIMEOUT).
 
 % @doc Sends a seek issued notification to all players 
 % registered to listen to then.
@@ -139,8 +139,8 @@ handle_call({player_quit, Pid}, _From, State) ->
 handle_call({notify_seek_issued, Seek}, _From, State) ->
 	send_seek_issued(Seek),
 	{reply, ok, State};
-handle_call({notify_seek_removed, SeekId, P1, P2}, _From, State) ->
-	send_seek_removed(SeekId, P1, P2),
+handle_call({notify_seek_removed, SeekId, PlayerPidOrList}, _From, State) ->
+	send_seek_removed(SeekId, PlayerPidOrList),
 	{reply, ok, State};
 handle_call(stop, _From, State) ->
 	?log("Received STOP message. Goodbye!", []),
@@ -148,8 +148,8 @@ handle_call(stop, _From, State) ->
 
 % @doc Handles player notification requests.
 % Asynchronous request callback.
-handle_cast({notify_seek_removed, SeekId, P1, P2}, State) ->
-	send_seek_removed(SeekId, P1, P2),
+handle_cast({notify_seek_removed, SeekId, PlayerPidOrList}, State) ->
+	send_seek_removed(SeekId, PlayerPidOrList),
 	{noreply, State}; 
 handle_cast({notify_seek_issued, Seek}, State) ->
 	send_seek_issued(Seek),
@@ -207,7 +207,7 @@ send_seek_issued(#seek{pid=SPid} = Seek) ->
 	ets:foldl(
 		fun({Pid}, []) -> 
 			case Pid of 
-				SPid -> ok; 
+				SPid -> ok;
 				_ -> c4_player:seek_issued(Pid, Seek)
 			end, 
 			[] 
@@ -219,14 +219,15 @@ send_seek_issued(#seek{pid=SPid} = Seek) ->
 
 % @doc Asynchronously sends a seek removal message to all registered players
 % except for the one issuing the seek.
-send_seek_removed(SeekId, P1, P2) ->
-	?log("Sending seek ~w removed message to everyone but ~w and ~w", [SeekId, P1, P2]),
+send_seek_removed(SeekId, PlayerPid) when is_pid(PlayerPid) ->
+	send_seek_removed(SeekId, [PlayerPid]);
+send_seek_removed(SeekId, PlayerPids) when is_list(PlayerPids) ->
+	?log("Sending seeks removed message ~w to everyone but ~w ", [SeekId, PlayerPids]),
 	ets:foldl(
 		fun({Pid}, []) -> 
-			case Pid of 
-				P1 -> ok; 
-				P2 -> ok; 
-				_ -> c4_player:seek_removed(Pid, SeekId)
+			case lists:member(Pid, PlayerPids) of
+				true -> ok; 
+				false -> c4_player:seek_removed(Pid, SeekId)
 			end,
 			[] 
 		end,
@@ -234,4 +235,3 @@ send_seek_removed(SeekId, P1, P2) ->
 		c4_player_notify_tbl
 		),
 	ok.
-
