@@ -45,7 +45,7 @@ cancel_seek(Pid, SeekId) ->
 	gen_server:call(?MODULE, {cancel_seek, Pid, SeekId}, ?INTERNAL_TIMEOUT).
 
 % @doc User request to accept a pending seek.
--spec(accept_seek(pos_integer()) -> ok | seek_not_found).
+-spec(accept_seek(pos_integer()) -> ok | no_seek_found).
 accept_seek(SeekId) ->
 	gen_server:call(?MODULE, {accept_seek, SeekId}, ?INTERNAL_TIMEOUT).
 

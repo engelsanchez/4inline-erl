@@ -392,9 +392,9 @@ idle({accept_seek, SeekId}, _From, State)  ->
 		{new_game, #game_info{} = GameInfo, Turn, Color} ->
 			?log("New game started right away", []),
 			new_game(GameInfo, Turn, Color, State);
-		seek_not_found -> 
+		no_seek_found -> 
 			?log("Bad seek id or already taken", []),
-			{reply, {seek_not_found, SeekId}, idle, State}
+			{reply, {no_seek_found, SeekId}, idle, State}
 	end;
 idle({cancel_seek}, _From, State) ->
 	?log("Player wants to cancel all seek requests", []),
