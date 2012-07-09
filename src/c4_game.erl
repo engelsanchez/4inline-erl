@@ -92,8 +92,8 @@ handle_call({play, P1, {drop, Col}}, _From, #state{p1=P1, p1conn=true, color1=Co
 							c4_player:other_played(P2, self(), {drop, Col}, your_turn),
 							{reply, ok, turn_change(State#state{board=NewBoard})};
 						true ->
-							c4_player:other_played(P2, self(), {drop, Col}, no_moves),
-							{stop, normal, no_moves, turn_change(State#state{board=NewBoard})}
+							c4_player:other_played(P2, self(), {drop, Col}, game_draw),
+							{stop, normal, game_draw, turn_change(State#state{board=NewBoard})}
 					end
 			end;
 		invalid_move -> 

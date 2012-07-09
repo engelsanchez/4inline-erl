@@ -81,6 +81,7 @@ init(ParentPid)->
 	process_flag(trap_exit, true),
 	ets:new(c4_game_id_tbl, [named_table, private, set]),
 	ets:new(c4_game_pid_tbl, [named_table, private, set]),
+	ets:new(c4_game_priv_tbl, [named_table, private, set]),
 	Seeks = dict:new(),
 	SeeksByPlayer= dict:new(),
 	SeeksById = dict:new(),
@@ -92,6 +93,7 @@ init(ParentPid)->
 terminate(_Reason, _Data) ->
 	ets:delete(c4_game_id_tbl),
 	ets:delete(c4_game_pid_tbl),
+	ets:delete(c4_game_priv_tbl),
 	ok.
 
 % @doc The main 'loop' state of this FSM handles all messages 
@@ -140,13 +142,12 @@ handle_call({seek, #seek{pid=Pid, type=anon, variant=Var, board_size=BoardSize} 
 			{reply, {seek_pending, SeekId}, NewState}
 	end;
 % Process play with friend request (private seek).
-handle_call({seek, #seek{pid=Pid, type=priv, variant=Var, board_size=BoardSize} = Seek}, _From, #state{seed=Seed} = State) ->
-	?log("Processing private game seek ~w", [Seek]),
+handle_call({seek, #seek{type=priv} = Seek}, _From, #state{seed=Seed} = State) ->
+	?log("Adding new private game seek ~w", [Seek]),
 	% Add to list of private games (to be started).
-	{GameId, Seed2} = next_game_id(Seed),
-	GameInfo = #game_info{variant=Var, board_size=BoardSize, ppid1=Pid, type=priv},
-	ets:insert(c4_game_id_tbl, {GameId, GameInfo}),
-	{reply, {new_game, pending, GameInfo, your_turn, 1}, State#state{seed=Seed2}};
+	{SeekId, Seed2} = next_game_id(Seed),
+	ets:insert(c4_game_priv_tbl, {SeekId, Seek#seek{id=SeekId}}),
+	{reply, {seek_pending, SeekId}, State#state{seed=Seed2}};
 handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, seeks=Seeks, seeks_by_player=SeeksByPlayer} = State) ->
 	?log("Processing accept seek ~w", [SeekId]),
 	case dict:find(SeekId, SeeksById) of
@@ -170,7 +171,30 @@ handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, se
 				NewState
 			};
 		error ->
-			{reply, no_seek_found, State}
+			case ets:lookup(c4_game_priv_tbl, SeekId) of
+				[{SeekId, #seek{pid=OPid, board_size=BoardSize, variant=Var} = Seek}] ->
+					?log("Seek matches private seek ~w. Starting new game", [Seek]),
+					ets:delete(c4_game_priv_tbl, SeekId),
+					{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var, type=anon}),
+					GameId=SeekId,
+					c4_player:joined(OPid, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, your_turn, 1),
+					ets:insert(c4_game_id_tbl, {GameId, GamePid}),
+					ets:insert(c4_game_pid_tbl, {GamePid, GameId}),
+					% Stop bugging these two players with seek notifications
+					c4_player_master:unregister_player(OPid),
+					c4_player_master:unregister_player(Pid),
+					{_SeekIds, Seeks2, SeeksById2, SeeksByPlayer2} =
+						remove_player_seeks([Pid, OPid], Seeks, SeeksById, SeeksByPlayer),
+					NewState = State#state{seeks=Seeks2, seeks_by_player=SeeksByPlayer2, seeks_by_id=SeeksById2},
+					?log("State ~w", [NewState]),
+					{
+						reply,
+						{new_game, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, other_turn, 2},
+						NewState
+					};
+				[] ->
+					{reply, no_seek_found, State}
+			end
 	end;
 handle_call({cancel_seek, Pid}, _From, 
 			#state{seeks=Seeks, seeks_by_id=SeeksById, seeks_by_player=SeeksByPlayer} = State) 
