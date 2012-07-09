@@ -82,6 +82,7 @@ init(ParentPid)->
 	ets:new(c4_game_id_tbl, [named_table, private, set]),
 	ets:new(c4_game_pid_tbl, [named_table, private, set]),
 	ets:new(c4_game_priv_tbl, [named_table, private, set]),
+	ets:new(c4_player_priv_tbl, [named_table, private, set]),
 	Seeks = dict:new(),
 	SeeksByPlayer= dict:new(),
 	SeeksById = dict:new(),
@@ -94,6 +95,7 @@ terminate(_Reason, _Data) ->
 	ets:delete(c4_game_id_tbl),
 	ets:delete(c4_game_pid_tbl),
 	ets:delete(c4_game_priv_tbl),
+	ets:delete(c4_player_priv_tbl),
 	ok.
 
 % @doc The main 'loop' state of this FSM handles all messages 
@@ -142,12 +144,17 @@ handle_call({seek, #seek{pid=Pid, type=anon, variant=Var, board_size=BoardSize} 
 			{reply, {seek_pending, SeekId}, NewState}
 	end;
 % Process play with friend request (private seek).
-handle_call({seek, #seek{type=priv} = Seek}, _From, #state{seed=Seed} = State) ->
+handle_call({seek, #seek{type=priv} = Seek}, {Pid, _Tag} = _From, 
+			#state{seed=Seed,seeks=Seeks, seeks_by_player=SeeksByPlayer, seeks_by_id=SeeksById} = State) ->
 	?log("Adding new private game seek ~w", [Seek]),
-	% Add to list of private games (to be started).
+	% Removing all other pending seeks when requesting private game
+	{_, Seeks2, SeeksById2, SeeksByPlayer2} = remove_player_seeks(Pid, Seeks, SeeksById, SeeksByPlayer),
 	{SeekId, Seed2} = next_game_id(Seed),
-	ets:insert(c4_game_priv_tbl, {SeekId, Seek#seek{id=SeekId}}),
-	{reply, {seek_pending, SeekId}, State#state{seed=Seed2}};
+	ets:insert(c4_game_priv_tbl, {SeekId, Seek#seek{id=SeekId, pid=Pid}}),
+	ets:insert(c4_player_priv_tbl, {Pid, SeekId}),
+	{reply, 
+	 {seek_pending, SeekId}, 
+	 State#state{seed=Seed2, seeks=Seeks2, seeks_by_id=SeeksById2, seeks_by_player=SeeksByPlayer2}};
 handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, seeks=Seeks, seeks_by_player=SeeksByPlayer} = State) ->
 	?log("Processing accept seek ~w", [SeekId]),
 	case dict:find(SeekId, SeeksById) of
@@ -175,6 +182,8 @@ handle_call({accept_seek, SeekId}, {Pid, _Tag}, #state{seeks_by_id=SeeksById, se
 				[{SeekId, #seek{pid=OPid, board_size=BoardSize, variant=Var} = Seek}] ->
 					?log("Seek matches private seek ~w. Starting new game", [Seek]),
 					ets:delete(c4_game_priv_tbl, SeekId),
+					% @todo Change below when multiple private seeks are possible
+					ets:delete(c4_player_priv_tbl, OPid),
 					{ok, GamePid} = c4_game:start_link(#game_info{ppid1=OPid, ppid2=Pid, board_size=BoardSize, variant=Var, type=anon}),
 					GameId=SeekId,
 					c4_player:joined(OPid, #game_info{pid=GamePid, id=GameId, board_size=BoardSize, variant=Var, type=anon}, your_turn, 1),
@@ -275,12 +284,15 @@ handle_info({timeout, _Ref, log_state},
 			#state{seeks=Seeks,seeks_by_id=SeeksById, seeks_by_player=SeeksByPlayer} = State) ->
 	IdTblSize = ets:info(c4_game_id_tbl, size),
 	PidTblSize = ets:info(c4_game_pid_tbl, size),
+	PrivTblSize = ets:info(c4_game_priv_tbl, size),
+	PlayerPrivTblSize = ets:info(c4_game_priv_tbl, size),
 	S = dict:to_list(Seeks),
 	SI = dict:to_list(SeeksById),
 	SP = dict:to_list(SeeksByPlayer),
-	?log("~w state: ~nid entries = ~w ~npid entries = ~w~nSeeks = ~w~n"
+	?log("~w state: ~nid entries = ~w ~npid entries = ~w~n"
+	"Priv seeks = ~w~nPlayer priv seeks = ~w~nSeeks = ~w~n"
 		"Seeks by Id = ~w~nSeeks by player = ~w", 
-		[?MODULE, IdTblSize, PidTblSize, S, SI, SP]),
+		[?MODULE, IdTblSize, PidTblSize, PrivTblSize, PlayerPrivTblSize, S, SI, SP]),
 	erlang:start_timer(?LOG_STATE_INTERVAL, self(), log_state),
 	{noreply, State}.
 
@@ -320,6 +332,7 @@ remove_player_seeks(PlayerPid, Seeks, SeeksById, SeeksByPlayer) when is_pid(Play
 	remove_player_seeks([PlayerPid], Seeks, SeeksById, SeeksByPlayer);
 remove_player_seeks(PlayerPids, Seeks, SeeksById, SeeksByPlayer) when is_list(PlayerPids) ->
 	% Compile list of seek ids
+	remove_player_priv_seeks(PlayerPids),
 	SeekIds = 
 		dict:fold(fun(K, V, L) -> case lists:member(K, PlayerPids) of true-> V ++ L;false -> L end end, 
 				  [],
@@ -333,6 +346,20 @@ remove_player_seeks(PlayerPids, Seeks, SeeksById, SeeksByPlayer) when is_list(Pl
 	c4_player_master:notify_seek_removed(SeekIds, PlayerPids),
 	{SeekIds, Seeks2, SeeksById2, SeeksByPlayer2}.
 
+% @doc Removes all private game seeks for a given player or list of players.
+remove_player_priv_seeks([]) -> ok;
+remove_player_priv_seeks([PlayerPid | More]) ->
+	remove_player_priv_seeks(PlayerPid),
+	remove_player_priv_seeks(More);
+remove_player_priv_seeks(PlayerPid) when is_pid(PlayerPid) ->
+	case ets:lookup(c4_player_priv_tbl, PlayerPid) of
+		[{PlayerPid, SeekId}] ->
+			ets:delete(c4_player_priv_tbl, PlayerPid),
+			ets:delete(c4_game_priv_tbl, SeekId);
+		_ -> ok
+	end.
+
+	
 
 -spec(do_remove_seek(pid(), seek_id, #state{}) ->{ok, #state{}} | {no_seek_found, #state{}}).
 do_remove_seek(Pid, SeekId, #state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_player=SeeksByPlayer} = State) ->
@@ -354,5 +381,14 @@ do_remove_seek(Pid, SeekId, #state{seeks=Seeks,seeks_by_id=SeeksById,seeks_by_pl
 			%?log("State ~w", [NewState]),
 			{ok, NewState};
 		{ok, _Seek} -> no_seek_found;
-		error -> no_seek_found
+		error ->
+			% A private seek maybe?
+			case ets:lookup(c4_game_priv_tbl, SeekId) of
+				[{SeekId, #seek{pid=Pid}}] ->
+				ets:delete(c4_game_priv_tbl, SeekId),
+				ets:delete(c4_player_priv_tbl, Pid),
+				{ok, State};
+				[] -> no_seek_found;
+				[{SeekId, #seek{}}] -> no_seek_found
+			end
 	end.

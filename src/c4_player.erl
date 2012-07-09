@@ -19,17 +19,20 @@
 	other_disconnected/2, disconnected/1, reconnected/2, game_started/2, 
 	seek_issued/2, seek_removed/2, quit/1]).
 -include("c4_common.hrl").
+
+-define(ISIZE, 6). % Width of zero padded integers in input text messages.
+-define(DISCONNECT_TIMEOUT, 60000). % Time to wait for player to reconnect
+-define(DISCONNECT_TIMEOUT_PRIV_GAME, 15 * 60 * 1000). % Time to wait for player to after requesting private game
+
 -record(state, {
 		game_pid = none  :: none | pid(), 
 		game_id = none	:: none | pos_integer(), 
 		parent = none :: none | pid(),
 		tref = none :: none | reference(),
-		prev_state = idle :: atom()
+		prev_state = idle :: atom(),
+		disconnect_timeout = ?DISCONNECT_TIMEOUT :: pos_integer()
 		}).
 
-
--define(ISIZE, 6). % Width of zero padded integers in input text messages.
--define(DISCONNECT_TIMEOUT, 60000). % Time to wait for player to reconnect
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Public API
@@ -400,7 +403,16 @@ idle({cancel_seek}, _From, State) ->
 idle({cancel_seek, SeekId}, _From, State) when is_integer(SeekId) ->
 	?log("Player wants to cancel seek ~w", [SeekId]),
 	Reply = c4_game_master:cancel_seek(self(), SeekId),
-	{reply, {Reply, SeekId}, idle, State};
+	% If private seek canceled, go back to normal disconnection timeout
+	% Since we can't tell if seek was private, assume it was for now since user
+	% can not issue both types at once.
+	% @todo Perhaps add priv/anon to game master reply to make sure.
+	NewState = 
+		case Reply of 
+			seek_canceled -> State#state{disconnect_timeout=?DISCONNECT_TIMEOUT};
+			_ -> State
+		end,
+	{reply, {Reply, SeekId}, idle, NewState};
 idle({new_game, #game_info{} = GameInfo, Turn, Color} = Event, _From, #state{parent=ParentId} = State) ->
 	?log("New game started: ~w", [Event]),
 	case ParentId of
@@ -480,13 +492,13 @@ new_game(#game_info{pid=GamePid, id=GameId} = GameInfo, Turn, Color, State) ->
 	{reply, {new_game, GameInfo#game_info{pid=none}, Turn, Color}, NextState, State#state{game_pid=GamePid, game_id=GameId}}.
 
 % @doc Notify our current game process of a disconnection
-do_disconnected(#state{game_pid=GamePid} = Data) ->
+do_disconnected(#state{game_pid=GamePid, disconnect_timeout=Timeout} = Data) ->
 	case GamePid of 
 		none -> ok;
 		_ -> c4_game:disconnect(GamePid, self())
 	end,
-	?log("Setting timer to stop player process in ~w seconds", [?DISCONNECT_TIMEOUT/1000]),
-	TRef = erlang:start_timer(?DISCONNECT_TIMEOUT, self(), player_disconnected),
+	?log("Setting timer to stop player process in ~w seconds", [Timeout/1000]),
+	TRef = erlang:start_timer(Timeout, self(), player_disconnected),
 	Data#state{parent=none, tref=TRef}.
 
 do_reconnected(ParentPid, #state{game_pid=GamePid, tref=TRef} = Data) when is_pid(ParentPid)->
@@ -527,7 +539,14 @@ do_seek(#seek{variant=Var,type=Type, board_size=BoardSize} = Seek, State) ->
 			new_game(GameInfo, Turn, Color, State);
 		{seek_pending, SeekId} -> 
 			?log("Player will have to wait for another", []),
-			{reply, {seek_pending, #seek{id=SeekId, variant=Var, type=Type, board_size=BoardSize}}, idle, State};
+			NewState = 
+				case Type of
+					anon -> State;
+					priv -> State#state{disconnect_timeout=?DISCONNECT_TIMEOUT_PRIV_GAME}
+				end,
+			% We are not exposing every internal seek attribute on reply
+			ReplySeek = #seek{id=SeekId, variant=Var, type=Type, board_size=BoardSize},
+			{reply, {seek_pending, ReplySeek}, idle, NewState};
 		{duplicate_seek, SeekId} ->
 			?log("Silly player issuing the same seek again ~w", [Seek]),
 			{reply, {duplicate_seek, SeekId}, idle, State}
