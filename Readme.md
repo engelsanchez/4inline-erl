@@ -1,6 +1,8 @@
 4 in-line game server written in Erlang
 =======================================
 
+You can [try the game online right now](http://4inline.engelsanchez.net).
+
 Two players can connect to the server and play against each other.
 Uses [cowboy](https://github.com/extend/cowboy) as the server layer
 to allow for multiple protocols (raw sockets, websockets and possibly
