@@ -3,13 +3,12 @@
 
 -module(c4_websocket_handler).
 -behavior(cowboy_http_handler).
--behaviour(cowboy_http_websocket_handler).
+-behaviour(cowboy_websocket_handler).
 -export([init/3, handle/2, terminate/2]).
 -export([websocket_init/3, websocket_handle/3,
         websocket_info/3, websocket_terminate/3]).
 -record(state, {player_pid=none :: none|pid()}).
 -include("c4_common.hrl").
--include("../deps/cowboy/include/http.hrl").
 
 % @doc Callback that handles new HTTP request by 
 % upgrading them to the websocket protocol if Upgrade header is present.
