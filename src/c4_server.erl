@@ -14,36 +14,23 @@ start() ->
 	error_logger:logfile({open, "c4_server.log"}),
 	error_logger:tty(false),
 	?log("Starting application ~w", [?MODULE]),
-    application:start(crypto),
-    application:start(public_key),
-    application:start(ssl),
-    application:start(cowboy),
-	application:start(uuid),
-    application:start(c4_server).
+    application:ensure_all_started(c4_server).
 
 % @doc Starts our game server and the cowboy listeners.
 % This is the initialization callback called from application:start
 -spec(start(normal | {failover, string()} | {takeover, string()}, term()) -> {ok, pid()} | ignore | {error, term()}).
 start(_Type, _Args) ->
-        Result = start_link(),
-        Dispatch = [
+    Result = start_link(),
+    Dispatch = cowboy_router:compile([
                 {'_', [
-                        {[<<"websocket">>], c4_websocket_handler, []},
-                        {'_', default_handler, []}
-                ]}
-        ],
-	?log("Starting cowboy listener on port 8080", []),
-        cowboy:start_listener(my_http_listener, 100,
-                cowboy_tcp_transport, [{port, 8080}],
-                cowboy_http_protocol, [{dispatch, Dispatch}]
-        ),
-        cowboy:start_listener(my_https_listener, 100,
-                cowboy_ssl_transport, [
-                        {port, 8443}, {certfile, "priv/ssl/cert.pem"},
-                        {keyfile, "priv/ssl/key.pem"}, {password, "cowboy"}],
-                cowboy_http_protocol, [{dispatch, Dispatch}]
-        ),
-	Result.
+                        {"/websocket", c4_websocket_handler, []},
+                        {"/", default_handler, []}
+                        ]}
+                ]),
+    ?log("Starting cowboy listener on port 8080", []),
+    cowboy:start_http(c4_http_listener, 100, [{port, 8080}],
+                      [{env, [{dispatch, Dispatch}]}]),
+    Result.
 
 % @doc Starts the game server and links it to the current process.
 % It does not start the cowboy listeners. For that use {@link start/2}

@@ -229,18 +229,6 @@ handle_call({cancel_seek, Pid, SeekId}, _From, State) when is_integer(SeekId) ->
 			{reply, seek_canceled, NewState};
 		no_seek_found -> {reply, no_seek_found, State}
 	end;
-% Request to join a pending game
-handle_call({join_game, PlayerPid, GameId}, _From, State) ->
-	% If found, notify any player already in the game.
-	case ets:lookup(c4_game_id_tbl, GameId) of
-		[{GameId, #game_info{variant=GameVar, board_size=BoardSize, ppid1=Other}}] -> 
-			{ok, GamePid} = c4_game:start_link({ppid1=Other, ppid2=PlayerPid, board_size=BoardSize, variant=GameVar}),
-			c4_player:joined(Other, GamePid, your_turn),
-			ets:insert(c4_game_id_tbl, {GameId, GamePid}),
-			ets:insert(c4_game_pid_tbl, {GamePid, GameId}),
-			{reply, {new_game, GamePid, GameId, other_turn}, State};
-		_ -> {reply, no_game, State}
-	end;
 handle_call(seek_list, _From, State) ->
 	{reply, get_seek_list(State), State};
 handle_call({register_for_seeks, PlayerPid}, _From, State) ->

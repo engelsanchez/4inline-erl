@@ -28,7 +28,7 @@ nolog(_Format, _Args) -> ok.
 -type turn() :: your_turn | other_turn.
 -type seek_id() :: pos_integer().
 -type game_id() :: pos_integer().
--opaque board() :: tuple().
+-type board() :: tuple().
 -record(game_info,{
 		id :: pos_integer(),
 		pid=none :: pid() | none, 

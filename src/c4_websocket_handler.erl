@@ -2,42 +2,25 @@
 % into c4_player commands (join a game, play, quit, etc).
 
 -module(c4_websocket_handler).
--behavior(cowboy_http_handler).
 -behaviour(cowboy_websocket_handler).
--export([init/3, handle/2, terminate/2]).
--export([websocket_init/3, websocket_handle/3,
-        websocket_info/3, websocket_terminate/3]).
+-export([init/3,
+         websocket_init/3,
+         websocket_handle/3,
+         websocket_info/3,
+         websocket_terminate/3]).
 -record(state, {player_pid=none :: none|pid()}).
+
 -include("c4_common.hrl").
 
-% @doc Callback that handles new HTTP request by 
-% upgrading them to the websocket protocol if Upgrade header is present.
-init({_Any, http}, Req, []) ->
-	?log("Incoming connection, checking to upgrade to WS ", []),
-        case cowboy_http_req:header('Upgrade', Req) of
-                {undefined, Req2} -> {shutdown, Req2, undefined};
-                {<<"websocket">>, _Req2} -> {upgrade, protocol, cowboy_http_websocket};
-                {<<"WebSocket">>, _Req2} -> {upgrade, protocol, cowboy_http_websocket}
-        end.
-
-
-handle(Req, State) ->
-	{ok, Req, State}.
-
-% @doc Termination callback. It does nothing since there is
-% nothing to cleanup in this app.
--spec(terminate(term(), term()) -> ok).
-terminate(_Req, _State) ->
-	?log("Connected closed", []),
-        ok.
+init({tcp, http}, _Req, _Opts) ->
+    {upgrade, protocol, cowboy_websocket}.
 
 % @doc When the websocket is created, a child c4_player process is spawned to which we'll forward
 % the user requests.
 -spec(websocket_init(term(), term(), term()) -> {ok, term(), #state{}} ).
 websocket_init(_Any, Req, []) ->
-        Req2 = cowboy_http_req:compact(Req),
-	?log("Starting ws connection", []),
-        {ok, Req2, #state{player_pid=none}}.
+    ?log("Starting ws connection", []),
+    {ok, Req, #state{player_pid=none}}.
 
 % @doc Translates websocket messages from the client into c4_player commands.	
 % Messages: SEEK, CANCEL_SEEK, PLAY, QUIT_GAME.

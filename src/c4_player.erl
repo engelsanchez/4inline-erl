@@ -3,7 +3,7 @@
 % {@link seek/1}, {@link cancel_seek/1},
 % {@link play/2} and {@link quit_game/1}.
 % The functions that handle events from the other player are
-% {@link joined/3}, {@link other_played/4} and {@link other_quit/2}.
+% {@link joined/4}, {@link other_played/4} and {@link other_quit/2}.
 % The rest are callback functions as this modules implements the generic
 % OTP gen_fsm (State machine) behavior.
 
